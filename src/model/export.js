@@ -32,8 +32,8 @@ export function stlBinary({ positions, indices }, name = 'relief') {
 export function stlFiles(model, base) {
   if (model.parts.length === 1) return { name: `${base}.stl`, data: stlBinary(model.parts[0], base), type: 'model/stl' };
   const files = {};
-  for (const p of model.parts) files[`${base}-${p.name}.stl`] = stlBinary(p, `${base} ${p.name}`);
-  return { name: `${base}-tuiles.zip`, data: zipSync(files, { level: 6 }), type: 'application/zip' };
+  for (const p of model.parts) files[`${base}-${p.name || 'relief'}.stl`] = stlBinary(p, `${base} ${p.name || 'relief'}`);
+  return { name: `${base}-pieces.zip`, data: zipSync(files, { level: 6 }), type: 'application/zip' };
 }
 
 // paint (facultatif) : { filaments: [hex…], filamentOf(code) } → chaque triangle du dessus
@@ -69,7 +69,8 @@ export function threeMF(model, base, paint = null) {
     objects.push(`<object id="${id}" name="${label}" type="model"${mat}><mesh><vertices>${vs.join('')}</vertices><triangles>${ts.join('')}</triangles></mesh></object>`);
     // Tuiles légèrement écartées pour être séparées dans le trancheur.
     const gap = 6;
-    items.push(`<item objectid="${id}" transform="1 0 0 0 1 0 0 0 1 ${p.tile[0] * gap} ${-p.tile[1] * gap} 0"/>`);
+    const [tx, ty] = p.tile || [0, 0];
+    items.push(`<item objectid="${id}" transform="1 0 0 0 1 0 0 0 1 ${tx * gap} ${-ty * gap} 0"/>`);
   });
   const modelXml =
     `<?xml version="1.0" encoding="UTF-8"?>` +

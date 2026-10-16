@@ -4,6 +4,7 @@ import { resampleGrid } from '../geo/terrain.js';
 import { C } from '../geo/landcover.js';
 import { CODE_TRACK, CODE_BAND, MAX_TRACKS } from './colors.js';
 import { majorityFilter, removeSmallRegions, stampCells } from './zones.js';
+import { buildPlaque, CODE_PLATE, CODE_TEXT } from './plaque.js';
 
 // Largeur imprimée des cours d'eau OpenStreetMap (mm).
 const RIVER_MM = { river: 1.4, canal: 1.0, stream: 0.7 };
@@ -181,12 +182,28 @@ export function buildModel(scene, model) {
       }
       parts.push({ ...mesh, triCodes, tile: [a, ny - 1 - b], name: nx * ny > 1 ? `${String.fromCharCode(65 + (ny - 1 - b))}${a + 1}` : '' });
     }
+  // Plaque de texte : même largeur que le modèle (80 % pour les formes arrondies), collée devant.
+  let center = [((bx0 + bx1) / 2) * s, ((by0 + by1) / 2) * s];
+  let totalDepth = depthMm;
+  const lines = (model.plaqueLines || []).map((l) => (l || '').trim());
+  if (model.plaque && (lines[0] || lines[1])) {
+    const pl = buildPlaque({
+      widthMm: shape === 'rect' ? widthMm : widthMm * 0.8,
+      depthMm: model.plaqueDepthMm, baseMm: model.baseMm, lines, font: model.plaqueFont,
+      textMm: model.textHeightMm, engrave: model.plaqueStyle === 'engrave', cx: center[0], backY: by0 * s,
+    });
+    parts.push({ ...pl, tile: null, name: 'plaque' });
+    codes.add(CODE_PLATE);
+    if (pl.hasText) codes.add(CODE_TEXT);
+    totalDepth += pl.depthMm;
+    center = [center[0], center[1] - pl.depthMm / 2];
+  }
   return {
     parts,
     codes,
-    center: [((bx0 + bx1) / 2) * s, ((by0 + by1) / 2) * s],
+    center,
     info: {
-      widthMm, depthMm,
+      widthMm, depthMm: totalDepth,
       heightMm: model.baseMm + model.reliefMm + (scene.tracksM && model.track ? model.trackHeightMm : 0),
       reliefMm: model.reliefMm,
       trackMm: scene.tracksM && model.track ? model.trackHeightMm : 0,

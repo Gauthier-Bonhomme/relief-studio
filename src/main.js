@@ -52,6 +52,7 @@ const DEFAULT_MODEL = {
   track: true, trackHeightMm: 1, trackWidthMm: 1.6, tiles: false, bedMm: 220, palette: 'papier',
   colorMode: 'landcover', printColors: {}, classOn: {}, bands: 5, snowAbove: 0, waterDepthMm: 0.6,
   osmRivers: true, trackColored: true, cleanMm2: 4,
+  plaque: false, plaqueLines: ['', ''], plaqueFont: 'serif', plaqueStyle: 'raised', plaqueDepthMm: 20, textHeightMm: 1,
 };
 
 const S = {
@@ -635,8 +636,8 @@ function ctlRange(target, key, label, min, max, step, format) {
   });
   return h('div', { className: 'ctl' }, h('label', {}, t(label), out), input);
 }
-function ctlToggle(target, key, label) {
-  const input = h('input', { type: 'checkbox', checked: !!target[key], onchange: () => { target[key] = input.checked; schedule(); commit(); renderControls(); } });
+function ctlToggle(target, key, label, after) {
+  const input = h('input', { type: 'checkbox', checked: !!target[key], onchange: () => { target[key] = input.checked; after?.(); schedule(); commit(); renderControls(); } });
   return h('div', { className: 'ctl toggle' }, h('label', {}, input, t(label)));
 }
 function ctlText(target, key, label) {
@@ -727,6 +728,22 @@ function ctlPrintColors(M, list) {
     return h('label', {}, input, t(label));
   }));
 }
+// Texte de la plaque, prérempli au premier affichage : titre, puis distance ou coordonnées.
+function defaultPlaqueLines() {
+  const st = S.place?.stats;
+  const line2 = st?.distanceM
+    ? `${fmt(st.distanceM / 1000, 1)} km · +${fmt(st.gainM)} m`
+    : S.frame ? `${Math.abs(S.frame.center[1]).toFixed(3)}° ${S.frame.center[1] >= 0 ? 'N' : 'S'} · ${Math.abs(S.frame.center[0]).toFixed(3)}° ${S.frame.center[0] >= 0 ? 'E' : 'W'}` : '';
+  return [S.poster.title || S.place?.label || '', line2];
+}
+function ctlPlaqueLine(M, i, label) {
+  const input = h('input', {
+    type: 'text', className: 'field', value: M.plaqueLines?.[i] || '',
+    oninput: () => { const l = [...(M.plaqueLines || ['', ''])]; l[i] = input.value; M.plaqueLines = l; schedule(); },
+    onchange: commit,
+  });
+  return h('div', { className: 'ctl' }, h('div', { className: 'lbl' }, t(label)), input);
+}
 const group = (title, ...items) => h('div', { className: 'group' }, h('h3', {}, t(title)), ...items);
 
 function renderControls() {
@@ -790,6 +807,17 @@ function renderControls() {
       group('sec.print',
         ctlToggle(M, 'tiles', 'model.tiles'),
         M.tiles && ctlRange(M, 'bedMm', 'model.bed', 120, 400, 5, mm)),
+      group('sec.plaque',
+        ctlToggle(M, 'plaque', 'plq.enable', () => {
+          if (M.plaque && !M.plaqueLines?.[0] && !M.plaqueLines?.[1]) M.plaqueLines = defaultPlaqueLines();
+        }),
+        M.plaque && ctlPlaqueLine(M, 0, 'plq.line1'),
+        M.plaque && ctlPlaqueLine(M, 1, 'plq.line2'),
+        M.plaque && ctlPills(M, 'plaqueFont', 'text.font', [['serif', t('font.serif')], ['geometric', t('font.geometric')]]),
+        M.plaque && ctlPills(M, 'plaqueStyle', 'plq.style', [['raised', t('plq.raised')], ['engrave', t('plq.engrave')]]),
+        M.plaque && ctlRange(M, 'plaqueDepthMm', 'plq.depth', 10, 40, 1, mm),
+        M.plaque && ctlRange(M, 'textHeightMm', 'plq.textHeight', 0.4, 3, 0.1, mm),
+        M.plaque && ctlPrintColors(M, [['text', 'pc.text'], ['base', 'pc.base']])),
       group('sec.printColors',
         ctlPills(M, 'colorMode', 'pc.mode', [['landcover', t('pc.landcover')], ['elevation', t('pc.elevation')], ['single', t('pc.single')]]),
         M.colorMode === 'landcover' && ctlClassColors(M),
@@ -1116,6 +1144,12 @@ function applyLang() {
 }
 
 if (import.meta.env.DEV) window.__relief = { S, get scene() { return scene; }, get model() { return lastModel; } };
+
+// Les lettres de la plaque sont dessinées avec les polices du site : on reconstruit le modèle
+// une fois qu'elles sont chargées.
+Promise.all(['600 40px Fraunces', '500 40px Inter', '500 40px Jost', '400 40px Jost'].map((f) => document.fonts.load(f)))
+  .then(() => { lastModel = null; schedule(); })
+  .catch(() => {});
 
 bind();
 applyLang();

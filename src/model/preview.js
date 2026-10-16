@@ -80,7 +80,8 @@ export class ModelPreview {
       const g = new THREE.Group();
       g.add(new THREE.Mesh(top, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0 })));
       g.add(new THREE.Mesh(restFlat, new THREE.MeshStandardMaterial({ color: new THREE.Color(...side), roughness: 0.95 })));
-      g.position.set(p.tile[0] * exploded - model.center[0], -p.tile[1] * exploded - model.center[1], 0);
+      const [tx, ty] = p.tile || [0, 0];
+      g.position.set(tx * exploded - model.center[0], -ty * exploded - model.center[1], 0);
       g.name = p.name || 'relief';
       this.group.add(g);
     }

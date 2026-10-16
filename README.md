@@ -8,7 +8,7 @@ Générateur de **posters** et d'**objets 3D imprimables** à partir d'un lieu :
 
 **2. Atelier.**
 - *Poster* : cinq styles (crêtes, courbes de niveau avec cotes, strates, ombrage, rivières), 19 palettes avec inversion clair/sombre, typographies classique ou géométrique, unités métriques ou impériales, fondu des bords, formats A4 à 61 × 91 cm et 18 × 24 in.
-- *Objet 3D* : rectangle, disque, hexagone ou contour du pays/de la région ; hauteur du relief, socle, finesse du maillage ; trace en relief ; découpe en tuiles pour le plateau de l'imprimante.
+- *Objet 3D* : rectangle, disque, hexagone ou contour du pays/de la région ; hauteur du relief, socle, finesse du maillage ; trace en relief ; plaque de texte à l'avant (deux lignes, lettres en relief ou gravées, dans leur propre couleur) ; découpe en tuiles pour le plateau de l'imprimante.
 - *Couleurs d'impression* : forêts, prairies, cultures, bâti, roche, neige, eau et traces, chacune avec sa couleur ; ou paliers d'altitude. Ruisseaux et rivières OpenStreetMap, eau en creux, limite de neige, fusion des petites zones. Les couleurs identiques partagent un filament.
 - Annuler / rétablir, projets enregistrés dans le navigateur, import/export JSON.
 
