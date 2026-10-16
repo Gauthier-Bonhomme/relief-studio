@@ -901,6 +901,14 @@ const EXPORTS = {
     const f = stlFiles(currentModel(), slug());
     download(f.name, f.data, f.type);
   },
+  bambu: async () => {
+    const profile = loadBambuProfile();
+    if (!profile) throw new Error(t('export.bambuSetup'));
+    const { bambuProject } = await import('./model/bambu.js');
+    const m = currentModel();
+    const f = bambuProject(m, slug(), resolveFilaments(S.model, m.codes, S.trackColors), profile.cfg);
+    download(f.name, f.data, f.type);
+  },
   '3mf': async () => {
     const { threeMF } = await import('./model/export.js');
     const m = currentModel();
@@ -986,12 +994,50 @@ async function enterExport() {
     );
     if (preview3d) box.append(h('img', { src: preview3d.snapshot(), alt: '' }));
     dls.append(
+      bambuItem(item, btn),
       item('3MF', t('export.3mfHint'), btn('3mf', '↓ 3MF')),
       item('STL', t('export.stlHint'), btn('stl', '↓ STL')),
       item('GLB', t('export.glbHint'), btn('glb', '↓ GLB')),
     );
   }
   dls.append(item(t('export.project'), t('export.projectHint'), h('button', { className: 'btn', onclick: () => EXPORTS.project() }, '↓ JSON')));
+}
+
+/* ---------- Profil Bambu Studio ---------- */
+
+// Bambu Studio ne reprend les filaments que d'un projet complet : on garde dans le navigateur
+// le profil d'un projet enregistré une fois par l'utilisateur avec son imprimante.
+const BAMBU_KEY = 'relief-studio:bambu-profile';
+function loadBambuProfile() {
+  try {
+    return JSON.parse(localStorage.getItem(BAMBU_KEY));
+  } catch {
+    return null;
+  }
+}
+async function pickBambuProfile(file) {
+  const { readBambuProfile } = await import('./model/bambu.js');
+  let message;
+  try {
+    const profile = readBambuProfile(new Uint8Array(await file.arrayBuffer()), file.name);
+    localStorage.setItem(BAMBU_KEY, JSON.stringify(profile));
+    message = t('export.bambuSaved', { p: profile.summary.printer });
+  } catch (e) {
+    console.warn(e);
+    message = t('export.bambuError');
+  }
+  // La page d'export est reconstruite (et son message effacé) : on l'affiche ensuite.
+  await enterExport();
+  $('#export-status').textContent = message;
+}
+function bambuItem(item, btn) {
+  const profile = loadBambuProfile();
+  const input = h('input', { type: 'file', accept: '.3mf', hidden: true, onchange: () => input.files[0] && pickBambuProfile(input.files[0]) });
+  const pick = h('button', { className: 'btn' + (profile ? ' ghost' : ' primary'), onclick: () => input.click() }, profile ? t('export.bambuChange') : t('export.bambuPick'));
+  const hint = profile
+    ? `${t('export.bambuHint')} ${t('export.bambuProfile', { p: profile.summary.printer })}`
+    : t('export.bambuSetup');
+  return item(t('export.bambu'), hint, input, pick, profile ? btn('bambu', '↓ 3MF Bambu') : null);
 }
 
 /* ---------- Projets enregistrés ---------- */

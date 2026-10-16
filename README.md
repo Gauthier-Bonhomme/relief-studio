@@ -12,7 +12,9 @@ Générateur de **posters** et d'**objets 3D imprimables** à partir d'un lieu :
 - *Couleurs d'impression* : forêts, prairies, cultures, bâti, roche, neige, eau et traces, chacune avec sa couleur ; ou paliers d'altitude. Ruisseaux et rivières OpenStreetMap, eau en creux, limite de neige, fusion des petites zones. Les couleurs identiques partagent un filament.
 - Annuler / rétablir, projets enregistrés dans le navigateur, import/export JSON.
 
-**3. Téléchargement.** PNG, PDF et SVG pour les posters ; 3MF multicolore (PrusaSlicer, Bambu Studio, OrcaSlicer), STL et GLB pour les objets 3D.
+**3. Téléchargement.** PNG, PDF et SVG pour les posters ; 3MF multicolore (PrusaSlicer, OrcaSlicer), STL et GLB pour les objets 3D.
+
+**Bambu Studio.** Bambu Studio ne reprend la liste des filaments que d'un vrai projet Bambu, avec tous ses réglages. L'export « 3MF pour Bambu Studio » repart donc d'un projet enregistré une fois dans Bambu Studio avec votre imprimante (Fichier › Enregistrer le projet). Relief Studio en garde le profil dans le navigateur, puis y ajuste le nombre de filaments, leurs couleurs et la matrice de purge. À l'ouverture, les filaments sont déjà réglés et les zones déjà peintes.
 
 ## Lancer en local
 

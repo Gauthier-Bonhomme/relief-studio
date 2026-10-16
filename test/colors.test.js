@@ -18,7 +18,8 @@ test('le socle est le filament 1 et les couleurs identiques sont regroupées', (
   assert.equal(filaments[0], '#f3f1ea');
   assert.equal(filamentOf(C.meadow), filamentOf(0));
   assert.equal(new Set(filaments).size, filaments.length);
-  assert.equal(filaments.length, 7);
+  assert.equal(filamentOf(C.snow), 1);
+  assert.equal(filaments.length, 6);
   const sameSnow = resolveFilaments({ ...model, printColors: { snow: '#f3f1ea' } }, new Set([C.snow]));
   assert.equal(sameSnow.filamentOf(C.snow), 1);
 });

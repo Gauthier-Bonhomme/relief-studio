@@ -12,7 +12,7 @@ export const CODE_BAND = CODE_TRACK + MAX_TRACKS; // paliers d'altitude : CODE_B
 export const DEFAULT_PRINT_COLORS = {
   base: '#f3f1ea', terrain: '#a9c47f',
   forest: '#2e6b3a', meadow: '#a9c47f', crop: '#d9c27c', built: '#7c7c7c',
-  rock: '#8f8f8f', snow: '#ffffff', water: '#2f74c0', track: '#d62828',
+  rock: '#8f8f8f', snow: '#f3f1ea', water: '#2f74c0', track: '#d62828',
   low: '#2e6b3a', high: '#f3f1ea', text: '#2b2b2b',
 };
 export const DEFAULT_CLASS_ON = { forest: true, meadow: true, crop: false, built: false, rock: true, snow: true, water: true };
