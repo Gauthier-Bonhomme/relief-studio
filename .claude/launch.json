@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "relief-studio", "runtimeExecutable": "node", "runtimeArgs": ["node_modules/vite/bin/vite.js", "--port", "5180", "--strictPort"], "port": 5180 }
+  ]
+}

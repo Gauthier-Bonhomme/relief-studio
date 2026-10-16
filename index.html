@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Relief Studio</title>
+    <meta name="description" content="Posters et reliefs 3D imprimables à partir d'une trace GPX, d'un sommet, d'une ville ou d'un pays." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2323211e'/%3E%3Cpath d='M4 24l7-10 4 5 5-9 8 14' fill='none' stroke='%23f2ede3' stroke-width='2.4' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Relief Studio">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 25l7-11 4 5 6-10 9 16" /></svg>
+        <span>Relief Studio</span>
+      </a>
+      <nav class="stepper" aria-label="Étapes">
+        <button data-step="1"><b>1</b><span data-i18n="step.place"></span></button>
+        <i></i>
+        <button data-step="2"><b>2</b><span data-i18n="step.studio"></span></button>
+        <i></i>
+        <button data-step="3"><b>3</b><span data-i18n="step.export"></span></button>
+      </nav>
+      <div class="lang" role="group">
+        <button data-lang="fr">FR</button><button data-lang="en">EN</button>
+      </div>
+    </header>
+
+    <!-- Étape 1 : lieu et cadrage -->
+    <section id="step-1" class="step">
+      <aside class="panel">
+        <h1 data-i18n="place.title"></h1>
+        <p class="muted" data-i18n="place.intro"></p>
+        <div class="tabs" role="tablist">
+          <button role="tab" data-tab="gpx" data-i18n="place.tab.gpx"></button>
+          <button role="tab" data-tab="search" data-i18n="place.tab.search"></button>
+          <button role="tab" data-tab="region" data-i18n="place.tab.region"></button>
+        </div>
+        <div class="tab" data-pane="gpx">
+          <label class="drop" id="gpx-drop">
+            <input type="file" id="gpx-input" accept=".gpx,application/gpx+xml" hidden />
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0l-5 5m5-5l5 5M4 20h16" /></svg>
+            <strong data-i18n="place.gpx.drop"></strong>
+            <span data-i18n="place.gpx.or"></span>
+          </label>
+          <p class="hint" data-i18n="place.gpx.hint"></p>
+          <p class="error" id="gpx-error" hidden></p>
+        </div>
+        <div class="tab" data-pane="search" hidden>
+          <input type="search" id="search-input" class="field" data-i18n-placeholder="place.search.placeholder" autocomplete="off" />
+          <ul class="results" id="search-results"></ul>
+        </div>
+        <div class="tab" data-pane="region" hidden>
+          <select id="region-collection" class="field">
+            <option value="countries" data-i18n="place.region.countries"></option>
+            <option value="frRegions" data-i18n="place.region.frRegions"></option>
+            <option value="frDepartements" data-i18n="place.region.frDepartements"></option>
+            <option value="usStates" data-i18n="place.region.usStates"></option>
+          </select>
+          <input type="search" id="region-filter" class="field" data-i18n-placeholder="place.region.filter" autocomplete="off" />
+          <ul class="results" id="region-results"></ul>
+        </div>
+        <div class="selected" id="selected-place"></div>
+      </aside>
+      <div class="mapwrap">
+        <div id="map"></div>
+        <div class="frame" id="frame"><span id="frame-size"></span></div>
+        <div class="mapbar">
+          <div class="seg" id="aspect-seg">
+            <button data-aspect="portrait" data-i18n="frame.portrait"></button>
+            <button data-aspect="landscape" data-i18n="frame.landscape"></button>
+            <button data-aspect="square" data-i18n="frame.square"></button>
+          </div>
+          <span class="muted small" data-i18n="frame.hint"></span>
+          <button class="btn primary" id="open-studio"><span data-i18n="action.openStudio"></span> →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Étape 2 : atelier -->
+    <section id="step-2" class="step" hidden>
+      <aside class="panel controls">
+        <div class="seg wide" id="mode-seg">
+          <button data-mode="poster" data-i18n="mode.poster"></button>
+          <button data-mode="model" data-i18n="mode.model"></button>
+        </div>
+        <div id="controls"></div>
+      </aside>
+      <div class="stage">
+        <div class="stagebar">
+          <button class="btn ghost" id="back-1">← <span data-i18n="action.back"></span></button>
+          <div class="tools">
+            <button class="icon" id="undo" data-i18n-title="action.undo"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3" /></svg></button>
+            <button class="icon" id="redo" data-i18n-title="action.redo"><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5M20 9H10a6 6 0 000 12h3" /></svg></button>
+            <button class="btn ghost" id="open-layouts" data-i18n="action.layouts"></button>
+          </div>
+          <button class="btn primary" id="to-export"><span data-i18n="action.toExport"></span> →</button>
+        </div>
+        <div class="preview" id="preview">
+          <div class="paper" id="paper"></div>
+          <div class="three" id="three" hidden></div>
+          <div class="overlay" id="loading" hidden>
+            <div class="spinner"></div>
+            <p id="loading-text"></p>
+            <button class="btn" id="loading-retry" hidden data-i18n="loading.retry"></button>
+          </div>
+        </div>
+        <div class="infobar" id="infobar"></div>
+      </div>
+    </section>
+
+    <!-- Étape 3 : téléchargement -->
+    <section id="step-3" class="step" hidden>
+      <div class="export">
+        <div class="export-preview" id="export-preview"></div>
+        <div class="export-body">
+          <button class="btn ghost" id="back-2">← <span data-i18n="step.studio"></span></button>
+          <h1 data-i18n="export.title"></h1>
+          <dl class="summary" id="export-summary"></dl>
+          <div class="downloads" id="downloads"></div>
+          <p class="muted small" data-i18n="export.local"></p>
+          <p class="status" id="export-status" aria-live="polite"></p>
+        </div>
+      </div>
+    </section>
+
+    <dialog id="layouts-dialog">
+      <form method="dialog" class="dialog">
+        <h2 data-i18n="layouts.title"></h2>
+        <div class="row">
+          <input type="text" id="layout-name" class="field" data-i18n-placeholder="layouts.name" />
+          <button type="button" class="btn primary" id="layout-save" data-i18n="action.save"></button>
+        </div>
+        <ul class="layouts" id="layouts-list"></ul>
+        <div class="row between">
+          <label class="btn ghost">
+            <input type="file" id="layout-import" accept=".json,application/json" hidden />
+            <span data-i18n="layouts.import"></span>
+          </label>
+          <button class="btn" value="close" data-i18n="layouts.close"></button>
+        </div>
+      </form>
+    </dialog>
+
+    <footer class="credits small muted" data-i18n="credits"></footer>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
