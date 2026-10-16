@@ -144,6 +144,14 @@ h2 { font: 600 18px/1.2 var(--serif); margin: 0 0 12px; }
 .color-actions .btn { padding: 4px 8px; font-size: 12px; }
 .colors { display: flex; gap: 10px; align-items: center; }
 .colors label { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 11px; color: var(--muted); }
+.track-list, .tracks { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 6px; }
+.tracks { margin: 0 0 10px; }
+.track-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+.track-row input[type='color'] { width: 28px; height: 28px; border: 0; padding: 0; background: none; cursor: pointer; flex: none; }
+.track-row div { flex: 1; min-width: 0; }
+.track-row strong { display: block; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-row small { color: var(--muted); font-size: 11px; }
+.icon.small { width: 24px; height: 24px; font-size: 14px; line-height: 1; color: var(--muted); flex: none; }
 .classes { display: grid; gap: 4px; }
 .ctl.classes > .class-row { display: flex; justify-content: flex-start; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; margin: 0; }
 .class-row input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px; }

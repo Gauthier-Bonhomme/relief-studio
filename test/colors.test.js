@@ -29,6 +29,17 @@ test('une zone décochée prend la couleur du reste du terrain', () => {
   assert.equal(colorOfCode({ ...model, colorMode: 'single' }, C.rock), '#123456');
 });
 
+test('une couleur par trace, sinon la couleur de trace par défaut', () => {
+  const model = { colorMode: 'landcover', printColors: {}, classOn: {} };
+  const trackColors = [null, '#2f74c0', '#d62828'];
+  assert.equal(colorOfCode(model, CODE_TRACK, trackColors), '#d62828'); // défaut
+  assert.equal(colorOfCode(model, CODE_TRACK + 1, trackColors), '#2f74c0');
+  // Trace 0 (défaut rouge) et trace 2 (rouge choisi) partagent le même filament.
+  const { filamentOf } = resolveFilaments(model, new Set([CODE_TRACK, CODE_TRACK + 1, CODE_TRACK + 2]), trackColors);
+  assert.equal(filamentOf(CODE_TRACK), filamentOf(CODE_TRACK + 2));
+  assert.notEqual(filamentOf(CODE_TRACK), filamentOf(CODE_TRACK + 1));
+});
+
 test('paliers d\'altitude : dégradé du bas vers le haut', () => {
   const model = { colorMode: 'elevation', bands: 3, printColors: { low: '#000000', high: '#ffffff' } };
   assert.equal(colorOfCode(model, CODE_BAND), '#000000');

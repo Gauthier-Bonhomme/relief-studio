@@ -57,13 +57,23 @@ const DEFAULT_MODEL = {
 const S = {
   step: 1,
   tab: 'gpx',
-  place: null, // { kind, label, sublabel, track?, stats?, ringsLL? }
+  place: null, // { kind, label, sublabel, tracks?: [{ id, name, points, stats }], stats?, ringsLL? }
   frame: null, // { center: [lon, lat], widthM, heightM }
   aspect: 'portrait',
   mode: 'poster',
   poster: structuredClone(DEFAULT_POSTER),
   model: structuredClone(DEFAULT_MODEL),
+  trackColors: [], // couleur de chaque trace (null = automatique)
 };
+
+// Couleurs proposées pour les traces ajoutées après la première.
+const TRACK_COLORS = ['#2f74c0', '#2e9e5b', '#8e44ad', '#e8a33d', '#d63f8c', '#16a3b8', '#7a5c3e', '#4b4b4b'];
+const defaultTrackColor = (i) => (i === 0 ? null : TRACK_COLORS[(i - 1) % TRACK_COLORS.length]);
+// Couleur effective d'une trace : la sienne, sinon l'accent du poster ou la couleur de trace 3D.
+function trackColor(i, mode = S.mode) {
+  if (S.trackColors[i]) return S.trackColors[i];
+  return mode === 'poster' ? resolveColors(S.poster).accent : { ...DEFAULT_PRINT_COLORS, ...S.model.printColors }.track;
+}
 
 let scene = null;
 let renderCache = {};
@@ -76,7 +86,7 @@ const fmt = (v, d = 0) =>
 /* ---------- Historique (annuler / rétablir) ---------- */
 
 const hist = { stack: [], i: -1 };
-const snapshot = () => JSON.stringify({ mode: S.mode, poster: S.poster, model: S.model });
+const snapshot = () => JSON.stringify({ mode: S.mode, poster: S.poster, model: S.model, trackColors: S.trackColors });
 function commit() {
   const s = snapshot();
   if (hist.stack[hist.i] === s) return;
@@ -91,6 +101,8 @@ function restore(s) {
   S.mode = o.mode;
   S.poster = o.poster;
   S.model = o.model;
+  S.trackColors = o.trackColors || [];
+  syncMapData();
   renderControls();
   updateModeUI();
   schedule();
@@ -151,7 +163,7 @@ function initMap() {
     map.addLayer({ id: 'region-fill', type: 'fill', source: 'region', paint: { 'fill-color': '#c4471d', 'fill-opacity': 0.07 } });
     map.addLayer({ id: 'region-line', type: 'line', source: 'region', paint: { 'line-color': '#c4471d', 'line-width': 1.5 } });
     map.addLayer({ id: 'track-casing', type: 'line', source: 'track', paint: { 'line-color': '#fff', 'line-width': 6 }, layout: { 'line-join': 'round', 'line-cap': 'round' } });
-    map.addLayer({ id: 'track-line', type: 'line', source: 'track', paint: { 'line-color': '#c4471d', 'line-width': 3 }, layout: { 'line-join': 'round', 'line-cap': 'round' } });
+    map.addLayer({ id: 'track-line', type: 'line', source: 'track', paint: { 'line-color': ['get', 'color'], 'line-width': 3 }, layout: { 'line-join': 'round', 'line-cap': 'round' } });
     syncMapData();
   });
   map.on('moveend', updateFrameFromMap);
@@ -165,7 +177,16 @@ function syncMapData() {
   if (!map?.getSource('track')) return;
   const p = S.place;
   map.getSource('track').setData(
-    p?.track ? { type: 'Feature', geometry: { type: 'LineString', coordinates: p.track.map((q) => [q[0], q[1]]) } } : emptyFC(),
+    p?.tracks?.length
+      ? {
+          type: 'FeatureCollection',
+          features: p.tracks.map((tr, i) => ({
+            type: 'Feature',
+            properties: { color: trackColor(i, 'poster') },
+            geometry: { type: 'LineString', coordinates: tr.points.map((q) => [q[0], q[1]]) },
+          })),
+        }
+      : emptyFC(),
   );
   map.getSource('region').setData(
     p?.ringsLL ? { type: 'Feature', geometry: { type: 'MultiPolygon', coordinates: p.ringsLL.map((r) => [r]) } } : emptyFC(),
@@ -226,6 +247,7 @@ function fitBoundsInFrame(b, margin = 0.06) {
 
 function choosePlace(place, bounds) {
   S.place = place;
+  if (!place.tracks) S.trackColors = [];
   S.autoRelief = true;
   S.poster.title = place.label;
   S.poster.subtitle = place.sublabel || '';
@@ -247,6 +269,7 @@ function renderSelected() {
   }
   el.append(h('span', { className: 'muted' }, t('place.selected')), h('strong', {}, p.label));
   if (p.sublabel) el.append(h('div', { className: 'stats' }, p.sublabel));
+  if (p.tracks?.length > 1) el.append(h('div', { className: 'stats' }, t('place.tracks', { n: p.tracks.length })));
   if (p.stats?.distanceM)
     el.append(h('div', { className: 'stats' }, `${t('stat.distance')} ${fmt(p.stats.distanceM / 1000, 1)} km · ${t('stat.gain')} ${fmt(p.stats.gainM)} m`));
 }
@@ -260,23 +283,91 @@ function setTab(tab) {
   if (tab === 'search') $('#search-input').focus();
 }
 
-// GPX
-async function readGpxFile(file) {
+// GPX : une ou plusieurs traces, ajoutées à la liste si un lieu GPX est déjà choisi.
+const combinedStats = (tracks) => ({
+  distanceM: tracks.reduce((a, tr) => a + tr.stats.distanceM, 0),
+  gainM: tracks.reduce((a, tr) => a + tr.stats.gainM, 0),
+  maxEleM: Math.max(...tracks.map((tr) => tr.stats.maxEleM ?? -Infinity)),
+});
+const tracksBounds = (tracks) => lonLatBounds(tracks.flatMap((tr) => tr.points));
+
+async function readGpxFiles(files) {
   const err = $('#gpx-error');
   err.hidden = true;
-  try {
-    const gpx = parseGPX(await file.text());
-    const label = gpx.name || file.name.replace(/\.gpx$/i, '').replace(/[_-]+/g, ' ');
-    const pts = simplify(gpx.points, 0.000004);
-    choosePlace(
-      { kind: 'gpx', label, sublabel: '', track: pts, stats: { distanceM: gpx.distanceM, gainM: gpx.gainM, maxEleM: gpx.maxEleM } },
-      lonLatBounds(pts),
-    );
-  } catch {
-    err.textContent = t('place.gpx.error');
+  const added = [], bad = [];
+  for (const file of files) {
+    try {
+      const gpx = parseGPX(await file.text());
+      added.push({
+        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        name: gpx.name || file.name.replace(/\.gpx$/i, '').replace(/[_-]+/g, ' '),
+        points: simplify(gpx.points, 0.000004),
+        stats: { distanceM: gpx.distanceM, gainM: gpx.gainM, maxEleM: gpx.maxEleM },
+      });
+    } catch {
+      bad.push(file.name);
+    }
+  }
+  if (bad.length) {
+    err.textContent = t('place.gpx.error') + (files.length > 1 ? ` (${bad.join(', ')})` : '');
     err.hidden = false;
   }
+  if (!added.length) return;
+  if (S.place?.kind === 'gpx') {
+    for (const tr of added) {
+      S.trackColors[S.place.tracks.length] = defaultTrackColor(S.place.tracks.length);
+      S.place.tracks.push(tr);
+    }
+    S.place.stats = combinedStats(S.place.tracks);
+    syncMapData();
+    fitBoundsInFrame(tracksBounds(S.place.tracks));
+    renderSelected();
+  } else {
+    S.trackColors = added.map((_, i) => defaultTrackColor(i));
+    choosePlace({ kind: 'gpx', label: added[0].name, sublabel: '', tracks: added, stats: combinedStats(added) }, tracksBounds(added));
+  }
+  renderTrackList();
 }
+
+function removeTrack(i) {
+  S.place.tracks.splice(i, 1);
+  S.trackColors.splice(i, 1);
+  if (!S.place.tracks.length) {
+    S.place = null;
+    S.trackColors = [];
+    scene = null;
+  } else {
+    S.place.stats = combinedStats(S.place.tracks);
+  }
+  syncMapData();
+  renderSelected();
+  renderTrackList();
+}
+
+// Ligne de trace : pastille de couleur, nom, distance ; ✕ pour retirer (étape Lieu)
+// ou ↺ pour revenir à la couleur automatique (atelier).
+function trackRow(tk, i, mode, removable) {
+  const input = h('input', {
+    type: 'color', value: trackColor(i, mode), title: t('track.color'),
+    oninput: () => { S.trackColors[i] = input.value; syncMapData(); schedule(); },
+    onchange: () => { commit(); if (S.step === 2) { renderControls(); updateFilamentList(); } },
+  });
+  const action = removable
+    ? h('button', { type: 'button', className: 'icon small', title: t('track.remove'), onclick: () => removeTrack(i) }, '×')
+    : S.trackColors[i]
+      ? h('button', { type: 'button', className: 'icon small', title: t('track.auto'), onclick: () => { S.trackColors[i] = null; commit(); syncMapData(); renderControls(); schedule(); } }, '↺')
+      : null;
+  return h('li', { className: 'track-row' }, input,
+    h('div', {}, h('strong', {}, tk.name), h('small', {}, `${fmt(tk.stats.distanceM / 1000, 1)} km · +${fmt(tk.stats.gainM)} m`)),
+    action);
+}
+function renderTrackList() {
+  const ul = $('#track-list');
+  const tracks = S.place?.kind === 'gpx' ? S.place.tracks : [];
+  ul.replaceChildren(...tracks.map((tk, i) => trackRow(tk, i, 'poster', true)));
+  ul.hidden = !tracks.length;
+}
+const ctlTrackColors = (mode) => h('ul', { className: 'ctl tracks' }, S.place.tracks.map((tk, i) => trackRow(tk, i, mode, false)));
 
 // Recherche
 let searchCtl, searchTimer;
@@ -343,10 +434,26 @@ function pickRegion(r) {
 
 /* ---------- Étape 2 : atelier ---------- */
 
+// Traces projetées dans le repère de la scène ; recalculées quand on en ajoute ou retire.
+const tracksSig = () => (S.place?.tracks || []).map((tr) => tr.id).join(',');
+function syncSceneTracks() {
+  if (!scene) return;
+  const sig = tracksSig();
+  if (scene.tracksSig === sig) return;
+  const proj = makeProjection(scene.frame.center[0], scene.frame.center[1]);
+  scene.tracksM = S.place?.tracks?.length ? S.place.tracks.map((tr) => tr.points.map(([lo, la]) => proj.forward(lo, la))) : null;
+  scene.stats = S.place?.stats || null;
+  scene.tracksSig = sig;
+  lastModel = null;
+}
+
 let loadCtl;
 async function ensureScene() {
   const key = JSON.stringify(S.frame) + '|' + (S.place?.label || '') + '|' + (S.place?.kind || '');
-  if (scene?.key === key) return scene;
+  if (scene?.key === key) {
+    syncSceneTracks();
+    return scene;
+  }
   loadCtl?.abort();
   loadCtl = new AbortController();
   const ctl = loadCtl;
@@ -356,9 +463,9 @@ async function ensureScene() {
   if (ctl.signal.aborted) throw new DOMException('aborted', 'AbortError');
   const proj = makeProjection(frame.center[0], frame.center[1]);
   const regionRingsM = S.place?.ringsLL?.map((r) => r.map(([lo, la]) => proj.forward(lo, la))) || null;
-  const trackM = S.place?.track?.map(([lo, la]) => proj.forward(lo, la)) || null;
   const mask = regionRingsM ? rasterMask(grid.cols, grid.rows, grid.cell, regionRingsM, null).inside : null;
-  scene = { key, frame, grid, mask, regionRingsM, trackM, stats: S.place?.stats || null };
+  scene = { key, frame, grid, mask, regionRingsM, stats: S.place?.stats || null };
+  syncSceneTracks();
   // Nouveau lieu : hauteur de relief par défaut proche de l'échelle réelle (×1,2), bornée.
   if (S.autoRelief) {
     S.autoRelief = false;
@@ -406,13 +513,13 @@ function ensureRivers() {
 
 const previewColors = () => ({
   base: { ...DEFAULT_PRINT_COLORS, ...S.model.printColors }.base,
-  colorOf: (code) => colorOfCode(S.model, code),
+  colorOf: (code) => colorOfCode(S.model, code, S.trackColors),
 });
 
 function updateFilamentList() {
   const el = document.getElementById('filament-list');
   if (!el || !lastModel) return;
-  const { filaments } = resolveFilaments(S.model, lastModel.codes);
+  const { filaments } = resolveFilaments(S.model, lastModel.codes, S.trackColors);
   el.replaceChildren(
     h('div', { className: 'lbl' }, t('pc.filaments', { n: filaments.length })),
     h('div', { className: 'chips' }, filaments.map((hex, i) => h('span', { className: 'chip', title: hex }, h('i', { style: `background:${hex}` }), String(i + 1)))),
@@ -460,8 +567,9 @@ function schedule() {
 
 function renderPreview() {
   if (!scene || S.step !== 2) return;
+  syncSceneTracks();
   if (S.mode === 'poster') {
-    const svg = renderPoster(scene, S.poster, { t, lang: getLang(), cache: renderCache });
+    const svg = renderPoster(scene, S.poster, { t, lang: getLang(), cache: renderCache, trackColors: S.trackColors });
     $('#paper').innerHTML = svg;
     fitPaper();
     const [W, H] = paperSize(S.poster);
@@ -488,7 +596,7 @@ function renderPreview() {
     const parts = [t('model.info', { w: fmt(i.widthMm), d: fmt(i.depthMm), h: fmt(i.heightMm, 1), x: fmt(i.exaggeration, 1) })];
     if (i.tiles[0] * i.tiles[1] > 1) parts.push(t('model.tilesInfo', { n: lastModel.parts.length, nx: i.tiles[0], ny: i.tiles[1] }));
     parts.push(t('model.tris', { n: fmt(tris) }));
-    parts.push(t('model.filaments', { n: resolveFilaments(S.model, lastModel.codes).filaments.length }));
+    parts.push(t('model.filaments', { n: resolveFilaments(S.model, lastModel.codes, S.trackColors).filaments.length }));
     $('#infobar').textContent = parts.join(' · ');
   }
 }
@@ -623,7 +731,7 @@ const group = (title, ...items) => h('div', { className: 'group' }, h('h3', {}, 
 
 function renderControls() {
   const box = $('#controls');
-  const hasTrack = !!S.place?.track;
+  const hasTrack = !!S.place?.tracks?.length;
   const hasRegion = !!S.place?.ringsLL;
   const pct = (v) => `${Math.round(v * 100)} %`;
   const mm = (v) => `${fmt(v, v < 10 && v % 1 ? 1 : 0)} mm`;
@@ -660,6 +768,7 @@ function renderControls() {
         ctlToggle(P, 'border', 'tune.border')),
       hasTrack && group('sec.track',
         ctlToggle(P, 'showTrack', 'tune.showTrack'),
+        P.showTrack && ctlTrackColors('poster'),
         P.showTrack && ctlRange(P, 'trackWidth', 'tune.trackWidth', 0, 1, 0.01, pct),
         P.showTrack && ctlToggle(P, 'trackHalo', 'tune.trackHalo')),
     ];
@@ -689,9 +798,9 @@ function renderControls() {
           M.colorMode === 'elevation' ? ['low', 'pc.low'] : ['terrain', M.colorMode === 'landcover' ? 'pc.terrainRest' : 'pc.terrain'],
           M.colorMode === 'elevation' && ['high', 'pc.high'],
           ['base', 'pc.base'],
-          hasTrack && M.trackColored && ['track', 'pc.track'],
         ]),
         hasTrack && ctlToggle(M, 'trackColored', 'pc.trackColored'),
+        hasTrack && M.trackColored && ctlTrackColors('model'),
         M.colorMode === 'landcover' && ctlRange(M, 'snowAbove', 'pc.snowAbove', 0, 5000, 100, (v) => (v ? `${fmt(v)} m` : t('pc.off'))),
         M.colorMode === 'landcover' && ctlRange(M, 'waterDepthMm', 'pc.waterDepth', 0, 2, 0.1, (v) => (v ? mm(v) : t('pc.off'))),
         M.colorMode === 'landcover' && ctlToggle(M, 'osmRivers', 'pc.osmRivers'),
@@ -724,7 +833,7 @@ async function posterCanvas(dpi) {
   let px = Math.round((W / 25.4) * dpi), py = Math.round((H / 25.4) * dpi);
   const cap = 14000 / Math.max(px, py);
   if (cap < 1) { px = Math.round(px * cap); py = Math.round(py * cap); }
-  const svg = renderPoster(scene, S.poster, { t, lang: getLang(), fontCss, cache: renderCache })
+  const svg = renderPoster(scene, S.poster, { t, lang: getLang(), fontCss, cache: renderCache, trackColors: S.trackColors })
     .replace(/width="[^"]+mm" height="[^"]+mm"/, `width="${px}" height="${py}"`);
   const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
   try {
@@ -755,7 +864,7 @@ const EXPORTS = {
     download(`${slug()}-${S.poster.paper}.pdf`, doc.output('blob'));
   },
   svg: async () => {
-    const svg = renderPoster(scene, S.poster, { t, lang: getLang(), fontCss: await exportFontCss(), cache: renderCache });
+    const svg = renderPoster(scene, S.poster, { t, lang: getLang(), fontCss: await exportFontCss(), cache: renderCache, trackColors: S.trackColors });
     download(`${slug()}-${S.poster.paper}.svg`, svg, 'image/svg+xml');
   },
   stl: async () => {
@@ -766,7 +875,7 @@ const EXPORTS = {
   '3mf': async () => {
     const { threeMF } = await import('./model/export.js');
     const m = currentModel();
-    const paint = resolveFilaments(S.model, m.codes);
+    const paint = resolveFilaments(S.model, m.codes, S.trackColors);
     const f = threeMF(m, slug(), paint.filaments.length > 1 ? paint : null);
     download(f.name, f.data, f.type);
   },
@@ -828,7 +937,7 @@ async function enterExport() {
   if (S.mode === 'poster') {
     const [W, H] = paperSize(S.poster);
     sum.append(...row('export.summary.format', `${t('export.poster')} · ${t('style.' + S.poster.style)} · ${paperLabel(S.poster.paper)} (${fmt(W)} × ${fmt(H)} mm)`));
-    box.innerHTML = renderPoster(scene, S.poster, { t, lang: getLang(), cache: renderCache });
+    box.innerHTML = renderPoster(scene, S.poster, { t, lang: getLang(), cache: renderCache, trackColors: S.trackColors });
     const dpi = h('select', {}, [150, 200, 300].map((d) => h('option', { value: d, selected: d === 200 }, `${d} dpi`)));
     dls.append(
       item('PNG', t('export.pngHint'), dpi, btn('png', '↓ PNG', () => +dpi.value)),
@@ -843,7 +952,7 @@ async function enterExport() {
       ...row('export.summary.dims', t('model.info', { w: fmt(i.widthMm), d: fmt(i.depthMm), h: fmt(i.heightMm, 1), x: fmt(i.exaggeration, 1) }) +
         (m.parts.length > 1 ? ' · ' + t('model.tilesInfo', { n: m.parts.length, nx: i.tiles[0], ny: i.tiles[1] }) : '')),
       h('dt', {}, t('export.summary.filaments')),
-      h('dd', { className: 'chips' }, resolveFilaments(S.model, m.codes).filaments.map((hex, k) =>
+      h('dd', { className: 'chips' }, resolveFilaments(S.model, m.codes, S.trackColors).filaments.map((hex, k) =>
         h('span', { className: 'chip', title: hex }, h('i', { style: `background:${hex}` }), String(k + 1)))),
     );
     if (preview3d) box.append(h('img', { src: preview3d.snapshot(), alt: '' }));
@@ -875,12 +984,19 @@ function saveProjects(list) {
   }
 }
 function projectData(name) {
-  const place = S.place ? { ...S.place, track: S.place.track ? simplify(S.place.track, 0.00001) : undefined } : null;
-  return { app: 'relief-studio', v: 1, name, savedAt: new Date().toISOString(), place, frame: S.frame, aspect: S.aspect, mode: S.mode, poster: S.poster, model: S.model };
+  const place = S.place ? { ...S.place, tracks: S.place.tracks?.map((tr) => ({ ...tr, points: simplify(tr.points, 0.00001) })) } : null;
+  return { app: 'relief-studio', v: 2, name, savedAt: new Date().toISOString(), place, frame: S.frame, aspect: S.aspect, mode: S.mode, poster: S.poster, model: S.model, trackColors: S.trackColors };
 }
 function openProject(d) {
   if (!d || d.app !== 'relief-studio' || !d.frame) throw new Error('invalid');
-  S.place = d.place || null;
+  let place = d.place || null;
+  // Projets de la première version : une seule trace dans place.track.
+  if (place?.track && !place.tracks) {
+    place = { ...place, tracks: [{ id: 't0', name: place.label, points: place.track, stats: place.stats }] };
+    delete place.track;
+  }
+  S.place = place;
+  S.trackColors = Array.isArray(d.trackColors) ? d.trackColors : [];
   S.aspect = ASPECTS[d.aspect] ? d.aspect : 'portrait';
   S.mode = d.mode === 'model' ? 'model' : 'poster';
   S.poster = { ...structuredClone(DEFAULT_POSTER), ...d.poster };
@@ -891,6 +1007,7 @@ function openProject(d) {
   fitBoundsInFrame(lonLatBounds(frameCorners(d.frame)), 0);
   S.frame = d.frame;
   renderSelected();
+  renderTrackList();
   resetHistory();
   $('#layouts-dialog').close();
   go(2);
@@ -935,14 +1052,18 @@ function bind() {
   $('#loading-retry').addEventListener('click', enterStudio);
 
   const input = $('#gpx-input'), drop = $('#gpx-drop');
-  input.addEventListener('change', () => input.files[0] && readGpxFile(input.files[0]));
+  input.addEventListener('change', () => {
+    const files = [...input.files];
+    input.value = ''; // pour pouvoir re-sélectionner les mêmes fichiers
+    if (files.length) readGpxFiles(files);
+  });
   drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('over'));
   drop.addEventListener('drop', (e) => {
     e.preventDefault();
     drop.classList.remove('over');
-    const f = e.dataTransfer.files[0];
-    if (f) readGpxFile(f);
+    const files = [...e.dataTransfer.files];
+    if (files.length) readGpxFiles(files);
   });
   $('#search-input').addEventListener('input', onSearchInput);
   $('#search-input').addEventListener('keydown', (e) => {
@@ -987,6 +1108,7 @@ function applyLang() {
   for (const b of $$('.lang button')) b.classList.toggle('active', b.dataset.lang === getLang());
   applyI18n();
   renderSelected();
+  renderTrackList();
   updateFrameFromMap();
   if (S.step === 2) { renderControls(); renderPreview(); }
   if (S.step === 3) enterExport();

@@ -426,8 +426,9 @@ function fadeDefs(art, amount) {
 
 /* ---------- Composition ---------- */
 
-// scene : { frame, grid, mask, regionRingsM, trackM, stats }
-export function renderPoster(scene, poster, { t, lang, fontCss = '', cache = {} } = {}) {
+// scene : { frame, grid, mask, regionRingsM, tracksM, stats } ; trackColors : couleur de chaque
+// trace (null = couleur d'accent de la palette).
+export function renderPoster(scene, poster, { t, lang, fontCss = '', cache = {}, trackColors = [] } = {}) {
   const L = layout(poster, scene.frame);
   const colors = resolveColors(poster);
   const customColors = !!(poster.colors?.bg || poster.colors?.ink);
@@ -453,14 +454,18 @@ export function renderPoster(scene, poster, { t, lang, fontCss = '', cache = {} 
   if (clip && poster.outline && style !== 'ridges') {
     svg += `<path d="${ringsPath(clip, mx, my)}" fill="none" stroke="${colors.ink}" stroke-width="${f2(L.u * 0.0012)}" stroke-linejoin="round"/>`;
   }
-  if (scene.trackM && poster.showTrack) {
-    const d = 'M' + scene.trackM.map(([x, y]) => `${f2(mx(x))},${f2(my(y))}`).join('L');
+  if (scene.tracksM && poster.showTrack) {
     const tw = L.u * (0.0018 + 0.0022 * poster.trackWidth);
+    const ds = scene.tracksM.map((pts) => 'M' + pts.map(([x, y]) => `${f2(mx(x))},${f2(my(y))}`).join('L'));
+    // Tous les liserés d'abord : là où deux traces se croisent, aucune n'efface l'autre.
     if (poster.trackHalo !== false)
-      svg += `<path d="${d}" fill="none" stroke="${colors.bg}" stroke-width="${f2(tw * 2.6)}" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.85"/>`;
-    svg += `<path d="${d}" fill="none" stroke="${colors.accent}" stroke-width="${f2(tw)}" stroke-linecap="round" stroke-linejoin="round"/>`;
-    const [sx, sy] = scene.trackM[0];
-    svg += `<circle cx="${f2(mx(sx))}" cy="${f2(my(sy))}" r="${f2(tw * 1.6)}" fill="${colors.accent}" stroke="${colors.bg}" stroke-width="${f2(tw * 0.6)}"/>`;
+      for (const d of ds) svg += `<path d="${d}" fill="none" stroke="${colors.bg}" stroke-width="${f2(tw * 2.6)}" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.85"/>`;
+    ds.forEach((d, i) => {
+      const col = trackColors[i] || colors.accent;
+      const [sx, sy] = scene.tracksM[i][0];
+      svg += `<path d="${d}" fill="none" stroke="${col}" stroke-width="${f2(tw)}" stroke-linecap="round" stroke-linejoin="round"/>`;
+      svg += `<circle cx="${f2(mx(sx))}" cy="${f2(my(sy))}" r="${f2(tw * 1.6)}" fill="${col}" stroke="${colors.bg}" stroke-width="${f2(tw * 0.6)}"/>`;
+    });
   }
   svg += '</g>';
   if (poster.border) {

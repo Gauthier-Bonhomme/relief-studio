@@ -2,7 +2,7 @@
 import { buildMesh, rasterMask, gridX, gridY } from './mesh.js';
 import { resampleGrid } from '../geo/terrain.js';
 import { C } from '../geo/landcover.js';
-import { CODE_TRACK, CODE_BAND } from './colors.js';
+import { CODE_TRACK, CODE_BAND, MAX_TRACKS } from './colors.js';
 
 // Largeur imprimée des cours d'eau OpenStreetMap (mm).
 const RIVER_MM = { river: 1.4, canal: 1.0, stream: 0.7 };
@@ -105,11 +105,12 @@ export function buildModel(scene, model) {
       for (let k = 0; k < cls.length; k++) if (cls[k] === C.water) z[k] = Math.max(0.6, z[k] - model.waterDepthMm);
   }
 
-  // Trace GPX : en relief et/ou en couleur sur le dessus.
+  // Traces GPX : en relief et/ou en couleur sur le dessus (trackHit = numéro de trace + 1).
   let trackHit = null;
-  if (scene.trackM && (model.track || model.trackColored)) {
+  if (scene.tracksM && (model.track || model.trackColored)) {
     trackHit = new Uint8Array(cols * rows);
-    stampLine(scene.trackM.map(([x, y]) => [x * s, y * s]), model.trackWidthMm / 2, cols, rows, cell, (k) => { trackHit[k] = 1; });
+    scene.tracksM.forEach((pts, ti) =>
+      stampLine(pts.map(([x, y]) => [x * s, y * s]), model.trackWidthMm / 2, cols, rows, cell, (k) => { trackHit[k] = ti + 1; }));
     if (model.track) for (let k = 0; k < z.length; k++) if (trackHit[k]) z[k] += model.trackHeightMm;
   }
 
@@ -119,7 +120,7 @@ export function buildModel(scene, model) {
     const i = Math.min(cols - 1, Math.max(0, Math.round(x / cell + (cols - 1) / 2)));
     const j = Math.min(rows - 1, Math.max(0, Math.round((rows - 1) / 2 - y / cell)));
     const k = j * cols + i;
-    if (trackHit && model.trackColored && trackHit[k]) return CODE_TRACK;
+    if (trackHit && model.trackColored && trackHit[k]) return CODE_TRACK + Math.min(MAX_TRACKS, trackHit[k]) - 1;
     if (model.colorMode === 'elevation') {
       const h = flatten ? Math.max(0, grid.data[k]) : grid.data[k];
       return CODE_BAND + Math.min(bands - 1, Math.max(0, Math.floor(((h - lo) / span) * bands)));
@@ -163,9 +164,9 @@ export function buildModel(scene, model) {
     center: [((bx0 + bx1) / 2) * s, ((by0 + by1) / 2) * s],
     info: {
       widthMm, depthMm,
-      heightMm: model.baseMm + model.reliefMm + (scene.trackM && model.track ? model.trackHeightMm : 0),
+      heightMm: model.baseMm + model.reliefMm + (scene.tracksM && model.track ? model.trackHeightMm : 0),
       reliefMm: model.reliefMm,
-      trackMm: scene.trackM && model.track ? model.trackHeightMm : 0,
+      trackMm: scene.tracksM && model.track ? model.trackHeightMm : 0,
       exaggeration: kz / s,
       tiles: [nx, ny],
       lo, hi,

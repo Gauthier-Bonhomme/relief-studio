@@ -37,13 +37,14 @@
         </div>
         <div class="tab" data-pane="gpx">
           <label class="drop" id="gpx-drop">
-            <input type="file" id="gpx-input" accept=".gpx,application/gpx+xml" hidden />
+            <input type="file" id="gpx-input" accept=".gpx,application/gpx+xml" multiple hidden />
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0l-5 5m5-5l5 5M4 20h16" /></svg>
             <strong data-i18n="place.gpx.drop"></strong>
             <span data-i18n="place.gpx.or"></span>
           </label>
           <p class="hint" data-i18n="place.gpx.hint"></p>
           <p class="error" id="gpx-error" hidden></p>
+          <ul class="track-list" id="track-list" hidden></ul>
         </div>
         <div class="tab" data-pane="search" hidden>
           <input type="search" id="search-input" class="field" data-i18n-placeholder="place.search.placeholder" autocomplete="off" />
