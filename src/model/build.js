@@ -3,27 +3,10 @@ import { buildMesh, rasterMask, gridX, gridY } from './mesh.js';
 import { resampleGrid } from '../geo/terrain.js';
 import { C } from '../geo/landcover.js';
 import { CODE_TRACK, CODE_BAND, MAX_TRACKS } from './colors.js';
+import { majorityFilter, removeSmallRegions, stampCells } from './zones.js';
 
 // Largeur imprimée des cours d'eau OpenStreetMap (mm).
 const RIVER_MM = { river: 1.4, canal: 1.0, stream: 0.7 };
-
-// Marque les points de grille à moins de width/2 (mm) d'une polyligne (coordonnées en mm).
-function stampLine(pts, half, cols, rows, cell, mark) {
-  for (let p = 1; p < pts.length; p++) {
-    const [ax, ay] = pts[p - 1], [bx, by] = pts[p];
-    const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - half) / cell + (cols - 1) / 2));
-    const i1 = Math.min(cols - 1, Math.ceil((Math.max(ax, bx) + half) / cell + (cols - 1) / 2));
-    const j0 = Math.max(0, Math.floor((rows - 1) / 2 - (Math.max(ay, by) + half) / cell));
-    const j1 = Math.min(rows - 1, Math.ceil((rows - 1) / 2 - (Math.min(ay, by) - half) / cell));
-    const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy || 1e-9;
-    for (let j = j0; j <= j1; j++)
-      for (let i = i0; i <= i1; i++) {
-        const px = gridX(i, cols, cell), py = gridY(j, rows, cell);
-        const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
-        if (Math.hypot(px - ax - t * dx, py - ay - t * dy) <= half) mark(j * cols + i);
-      }
-  }
-}
 
 export const SHAPES = ['rect', 'circle', 'hexagon', 'region'];
 
@@ -84,48 +67,88 @@ export function buildModel(scene, model) {
     z[k] = model.baseMm + Math.max(0, h - lo) * kz;
   }
 
-  // Occupation du sol rééchantillonnée sur la grille du modèle (point le plus proche).
-  let cls = null;
+  // ---------- Zones de couleur : une par maille (les deux triangles d'une maille ont la même) ----------
+  const cc = cols - 1, cr = rows - 1;
+  const cellH = (i, j) => {
+    const k = j * cols + i, d = grid.data;
+    const v = (d[k] + d[k + 1] + d[k + cols] + d[k + cols + 1]) / 4;
+    return flatten ? Math.max(0, v) : v;
+  };
+  // Surface minimale d'une zone (mm²) → nombre de mailles ; les îlots plus petits sont fondus.
+  const minCells = model.cleanMm2 > 0 ? Math.round(model.cleanMm2 / (cell * cell)) : 0;
+  const bands = Math.max(2, model.bands);
+  let zone = null;
   if (model.colorMode === 'landcover' && scene.landcover) {
     const sg = scene.grid, lc = scene.landcover;
-    cls = new Uint8Array(cols * rows);
-    for (let j = 0; j < rows; j++)
-      for (let i = 0; i < cols; i++) {
-        const si = Math.round(gridX(i, cols, grid.cell) / sg.cell + (sg.cols - 1) / 2);
-        const sj = Math.round((sg.rows - 1) / 2 - gridY(j, rows, grid.cell) / sg.cell);
-        cls[j * cols + i] = lc[Math.min(sg.rows - 1, Math.max(0, sj)) * sg.cols + Math.min(sg.cols - 1, Math.max(0, si))];
+    zone = new Uint8Array(cc * cr);
+    for (let j = 0; j < cr; j++)
+      for (let i = 0; i < cc; i++) {
+        const si = Math.round(gridX(i + 0.5, cols, grid.cell) / sg.cell + (sg.cols - 1) / 2);
+        const sj = Math.round((sg.rows - 1) / 2 - gridY(j + 0.5, rows, grid.cell) / sg.cell);
+        let v = lc[Math.min(sg.rows - 1, Math.max(0, sj)) * sg.cols + Math.min(sg.cols - 1, Math.max(0, si))];
+        if (model.snowAbove > 0 && v !== C.water && cellH(i, j) >= model.snowAbove) v = C.snow;
+        zone[j * cc + i] = v;
       }
-    if (model.snowAbove > 0)
-      for (let k = 0; k < cls.length; k++) if (grid.data[k] >= model.snowAbove && cls[k] !== C.water) cls[k] = C.snow;
+    if (minCells) {
+      zone = majorityFilter(zone, cc, cr);
+      removeSmallRegions(zone, cc, cr, minCells);
+    }
+    // Cours d'eau tracés après le nettoyage : un ruisseau fin ne doit pas être effacé.
     if (model.osmRivers && scene.rivers?.length)
       for (const r of scene.rivers)
-        stampLine(r.pts.map(([x, y]) => [x * s, y * s]), (RIVER_MM[r.kind] || 0.8) / 2, cols, rows, cell, (k) => { cls[k] = C.water; });
-    // Eau légèrement en creux : les rives se lisent mieux, au toucher comme à l'œil.
-    if (model.waterDepthMm > 0)
-      for (let k = 0; k < cls.length; k++) if (cls[k] === C.water) z[k] = Math.max(0.6, z[k] - model.waterDepthMm);
+        stampCells(r.pts.map(([x, y]) => [x * s, y * s]), (RIVER_MM[r.kind] || 0.8) / 2, cols, rows, cell, (c) => { zone[c] = C.water; });
+  } else if (model.colorMode === 'elevation') {
+    zone = new Uint8Array(cc * cr);
+    for (let j = 0; j < cr; j++)
+      for (let i = 0; i < cc; i++)
+        zone[j * cc + i] = CODE_BAND + Math.min(bands - 1, Math.max(0, Math.floor(((cellH(i, j) - lo) / span) * bands)));
+    if (minCells) removeSmallRegions(zone, cc, cr, minCells);
   }
 
-  // Traces GPX : en relief et/ou en couleur sur le dessus (trackHit = numéro de trace + 1).
-  let trackHit = null;
+  // Traces GPX par maille (numéro de trace + 1) : bande continue, sans dents de scie.
+  let trackCell = null;
   if (scene.tracksM && (model.track || model.trackColored)) {
-    trackHit = new Uint8Array(cols * rows);
+    trackCell = new Uint8Array(cc * cr);
     scene.tracksM.forEach((pts, ti) =>
-      stampLine(pts.map(([x, y]) => [x * s, y * s]), model.trackWidthMm / 2, cols, rows, cell, (k) => { trackHit[k] = ti + 1; }));
-    if (model.track) for (let k = 0; k < z.length; k++) if (trackHit[k]) z[k] += model.trackHeightMm;
+      stampCells(pts.map(([x, y]) => [x * s, y * s]), model.trackWidthMm / 2, cols, rows, cell, (c) => { trackCell[c] = ti + 1; }));
   }
 
-  // Code de zone d'un triangle du dessus, d'après le point de grille le plus proche de son centre.
-  const bands = Math.max(2, model.bands);
-  const codeAt = (x, y) => {
-    const i = Math.min(cols - 1, Math.max(0, Math.round(x / cell + (cols - 1) / 2)));
-    const j = Math.min(rows - 1, Math.max(0, Math.round((rows - 1) / 2 - y / cell)));
-    const k = j * cols + i;
-    if (trackHit && model.trackColored && trackHit[k]) return CODE_TRACK + Math.min(MAX_TRACKS, trackHit[k]) - 1;
-    if (model.colorMode === 'elevation') {
-      const h = flatten ? Math.max(0, grid.data[k]) : grid.data[k];
-      return CODE_BAND + Math.min(bands - 1, Math.max(0, Math.floor(((h - lo) / span) * bands)));
+  // Relief : l'eau en creux et la trace en relief déplacent les 4 coins des mailles concernées,
+  // si bien que la zone colorée reste plate et que la pente se fait dans la maille voisine.
+  const cornersOf = (flags, test) => {
+    const out = new Uint8Array(cols * rows);
+    for (let c = 0; c < flags.length; c++) {
+      if (!test(flags[c])) continue;
+      const i = c % cc, j = (c - i) / cc, k = j * cols + i;
+      out[k] = out[k + 1] = out[k + cols] = out[k + cols + 1] = 1;
     }
-    return cls ? cls[k] : 0;
+    return out;
+  };
+  if (zone && model.colorMode === 'landcover' && model.waterDepthMm > 0) {
+    const wet = cornersOf(zone, (v) => v === C.water);
+    for (let k = 0; k < z.length; k++) if (wet[k]) z[k] = Math.max(0.6, z[k] - model.waterDepthMm);
+  }
+  if (trackCell && model.track) {
+    const up = cornersOf(trackCell, (v) => v > 0);
+    for (let k = 0; k < z.length; k++) if (up[k]) z[k] += model.trackHeightMm;
+  }
+
+  // Code final par maille : la trace par-dessus les zones. Les rivières et les traces découpent
+  // parfois de petits morceaux de terrain : seconde passe de nettoyage, traits fins protégés.
+  const cellCodes = new Uint8Array(cc * cr);
+  if (zone) cellCodes.set(zone);
+  if (trackCell && model.trackColored)
+    for (let c = 0; c < cellCodes.length; c++) if (trackCell[c]) cellCodes[c] = CODE_TRACK + Math.min(MAX_TRACKS, trackCell[c]) - 1;
+  if (minCells && (zone || trackCell)) {
+    const waterLines = model.colorMode === 'landcover';
+    removeSmallRegions(cellCodes, cc, cr, minCells, (v) => (v >= CODE_TRACK && v < CODE_BAND) || (waterLines && v === C.water));
+  }
+
+  // Code de zone d'un triangle du dessus : celui de la maille qui contient son centre.
+  const codeAt = (x, y) => {
+    const i = Math.min(cc - 1, Math.max(0, Math.floor(x / cell + (cols - 1) / 2)));
+    const j = Math.min(cr - 1, Math.max(0, Math.floor((rows - 1) / 2 - y / cell)));
+    return cellCodes[j * cc + i];
   };
 
   const ringsMm = ringsM ? ringsM.map((r) => r.map(([x, y]) => [x * s, y * s])) : null;

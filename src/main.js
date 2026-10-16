@@ -51,7 +51,7 @@ const DEFAULT_MODEL = {
   shape: 'rect', sizeMm: 150, baseMm: 4, reliefMm: 20, detail: 260, flattenSea: true,
   track: true, trackHeightMm: 1, trackWidthMm: 1.6, tiles: false, bedMm: 220, palette: 'papier',
   colorMode: 'landcover', printColors: {}, classOn: {}, bands: 5, snowAbove: 0, waterDepthMm: 0.6,
-  osmRivers: true, trackColored: true,
+  osmRivers: true, trackColored: true, cleanMm2: 4,
 };
 
 const S = {
@@ -804,6 +804,7 @@ function renderControls() {
         M.colorMode === 'landcover' && ctlRange(M, 'snowAbove', 'pc.snowAbove', 0, 5000, 100, (v) => (v ? `${fmt(v)} m` : t('pc.off'))),
         M.colorMode === 'landcover' && ctlRange(M, 'waterDepthMm', 'pc.waterDepth', 0, 2, 0.1, (v) => (v ? mm(v) : t('pc.off'))),
         M.colorMode === 'landcover' && ctlToggle(M, 'osmRivers', 'pc.osmRivers'),
+        M.colorMode !== 'single' && ctlRange(M, 'cleanMm2', 'pc.clean', 0, 25, 1, (v) => (v ? `${v} mm²` : t('pc.off'))),
         h('div', { id: 'filament-list', className: 'ctl filaments' })),
     ];
   }
