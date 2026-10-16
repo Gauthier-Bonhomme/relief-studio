@@ -11,6 +11,7 @@ export const PAPERS = {
   '30x40': [300, 400],
   '50x70': [500, 700],
   '61x91': [610, 914],
+  '18x24in': [457.2, 609.6],
 };
 
 export const STYLES = ['ridges', 'contours', 'strata', 'shade', 'rivers'];
@@ -129,21 +130,110 @@ function geomPath(geom, gx, gy) {
   return d;
 }
 
-function drawContours(ctx) {
-  const { grid, poster, colors, range, gx, gy } = ctx;
-  const [lo, hi] = range;
-  const step = niceStep((hi - lo) / (12 + poster.density * 48));
-  const t = [];
-  for (let v = Math.ceil(lo / step) * step; v < hi; v += step) t.push(v);
-  if (grid.min < 0 && !t.includes(0)) t.unshift(0);
-  const geoms = contourGeoms(grid, t);
-  const thin = f2(ctx.u * 0.0008), thick = f2(ctx.u * 0.0019);
-  let out = '';
-  for (const g of geoms) {
-    if (!g.coordinates.length) continue;
-    const major = Math.round(g.value / step) % 5 === 0 || g.value === 0;
-    out += `<path d="${geomPath(g, gx, gy)}" fill="none" stroke="${colors.ink}" stroke-width="${major ? thick : thin}" stroke-opacity="${major ? 1 : 0.75}" stroke-linejoin="round"/>`;
+// Lissage gaussien séparable (bords répliqués) pour des courbes plus souples.
+function gaussian(grid, sigma) {
+  const { cols, rows, data } = grid;
+  const r = Math.ceil(sigma * 3);
+  const k = new Float32Array(2 * r + 1);
+  let sum = 0;
+  for (let d = -r; d <= r; d++) sum += k[d + r] = Math.exp(-(d * d) / (2 * sigma * sigma));
+  for (let d = 0; d < k.length; d++) k[d] /= sum;
+  const tmp = new Float32Array(data.length), out = new Float32Array(data.length);
+  for (let j = 0; j < rows; j++)
+    for (let i = 0; i < cols; i++) {
+      let v = 0;
+      for (let d = -r; d <= r; d++) v += data[j * cols + Math.min(cols - 1, Math.max(0, i + d))] * k[d + r];
+      tmp[j * cols + i] = v;
+    }
+  for (let j = 0; j < rows; j++)
+    for (let i = 0; i < cols; i++) {
+      let v = 0;
+      for (let d = -r; d <= r; d++) v += tmp[Math.min(rows - 1, Math.max(0, j + d)) * cols + i] * k[d + r];
+      out[j * cols + i] = v;
+    }
+  return { ...grid, data: out };
+}
+
+function smoothed(ctx, sigma) {
+  if (sigma < 0.3) return ctx.grid;
+  const key = sigma.toFixed(2);
+  if (ctx.cache.smooth?.key !== key) ctx.cache.smooth = { key, grid: gaussian(ctx.grid, sigma) };
+  return ctx.cache.smooth.grid;
+}
+
+// Emplacements des cotes le long d'un anneau (coordonnées papier) : portions assez droites,
+// espacées entre elles et des cotes déjà posées.
+function labelSpots(pts, labelW, spacing, phase, placed, minGap) {
+  const n = pts.length;
+  const cum = new Float64Array(n);
+  for (let i = 1; i < n; i++) cum[i] = cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  const total = cum[n - 1];
+  if (total < labelW * 5) return [];
+  const at = (s) => {
+    let lo = 0, hi = n - 1;
+    while (hi - lo > 1) {
+      const m = (lo + hi) >> 1;
+      if (cum[m] <= s) lo = m;
+      else hi = m;
+    }
+    const t = (s - cum[lo]) / (cum[hi] - cum[lo] || 1);
+    return [pts[lo][0] + t * (pts[hi][0] - pts[lo][0]), pts[lo][1] + t * (pts[hi][1] - pts[lo][1])];
+  };
+  const spots = [];
+  for (let s = labelW + (phase % spacing); s < total - labelW; s += spacing) {
+    const a = at(s - labelW * 0.7), b = at(s + labelW * 0.7), p = at(s);
+    if (Math.hypot(b[0] - a[0], b[1] - a[1]) < labelW * 1.3) continue; // trop courbé
+    if (placed.some((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) < minGap)) continue;
+    let ang = (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
+    if (ang > 90) ang -= 180;
+    else if (ang < -90) ang += 180;
+    placed.push(p);
+    spots.push({ x: p[0], y: p[1], ang });
   }
+  return spots;
+}
+
+function drawContours(ctx) {
+  const { poster, colors, range, gx, gy, art } = ctx;
+  const grid = smoothed(ctx, (poster.smoothing ?? 0.5) * 3);
+  const uf = poster.units === 'imperial' ? 3.28084 : 1; // altitudes affichées en pieds ou en mètres
+  const lo = range[0] * uf, hi = range[1] * uf;
+  const step = poster.contourStep > 0 ? poster.contourStep : niceStep((hi - lo) / (12 + poster.density * 48));
+  const levels = [];
+  for (let v = Math.ceil(lo / step) * step; v < hi; v += step) levels.push(v);
+  if (grid.min < 0 && hi > 0 && !levels.includes(0)) levels.unshift(0);
+  const geoms = contourGeoms(grid, levels.map((v) => v / uf));
+  const lw = ctx.u * 0.0007 * (0.35 + (poster.lineWidth ?? 0.5) * 1.8);
+  const ink = hexToRgb(colors.ink), light = hexToRgb(colors.hi);
+  const fs = ctx.u * 0.0055;
+  const spacing = art.w * 0.3, minGap = art.w * 0.085;
+  const placed = [];
+  let lines = '', labels = '', gaps = '';
+  geoms.forEach((g, k) => {
+    if (!g.coordinates.length) return;
+    const v = levels[k];
+    const major = Math.round(v / step) % 5 === 0;
+    const tt = (v - lo) / (hi - lo);
+    const color = major ? colors.hi : rgbToHex(mix(ink, light, 0.1 + 0.3 * tt));
+    const op = major ? 0.95 : 0.45 + 0.4 * tt;
+    lines += `<path d="${geomPath(g, gx, gy)}" fill="none" stroke="${color}" stroke-opacity="${f2(op)}" stroke-width="${f2(major ? lw * 2 : lw)}" stroke-linejoin="round"/>`;
+    if (!major || !poster.labels) return;
+    const text = String(Math.round(v));
+    const labelW = text.length * fs * 0.62;
+    for (const poly of g.coordinates)
+      for (const ring of poly) {
+        const pts = ring.map(([x, y]) => [gx(x - 0.5), gy(y - 0.5)]);
+        for (const p of labelSpots(pts, labelW, spacing, (v * 37.7) % spacing, placed, minGap)) {
+          const rot = `rotate(${f2(p.ang)} ${f2(p.x)} ${f2(p.y)})`;
+          gaps += `<rect x="${f2(p.x - labelW / 2 - fs * 0.35)}" y="${f2(p.y - fs * 0.6)}" width="${f2(labelW + fs * 0.7)}" height="${f2(fs * 1.2)}" transform="${rot}" fill="#000"/>`;
+          labels += `<text x="${f2(p.x)}" y="${f2(p.y)}" dy="${f2(fs * 0.36)}" transform="${rot}">${text}</text>`;
+        }
+      }
+  });
+  const r = `x="${f2(art.x)}" y="${f2(art.y)}" width="${f2(art.w)}" height="${f2(art.h)}"`;
+  let out = `<defs><mask id="contour-gaps" maskUnits="userSpaceOnUse" ${r}><rect ${r} fill="#fff"/>${gaps}</mask></defs>`;
+  out += `<g mask="url(#contour-gaps)">${lines}</g>`;
+  if (labels) out += `<g fill="${colors.hi}" fill-opacity="0.9" font-family="${fontFamily(poster, 'body')}" font-size="${f2(fs)}" text-anchor="middle">${labels}</g>`;
   return out;
 }
 
@@ -256,49 +346,82 @@ function fmtNum(v, lang, digits = 0) {
   return new Intl.NumberFormat(lang === 'fr' ? 'fr-FR' : 'en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(v);
 }
 function fmtCoord(lon, lat) {
-  return `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'} · ${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? 'E' : 'W'}`;
+  return `${Math.abs(lat).toFixed(3)}° ${lat >= 0 ? 'N' : 'S'} ${Math.abs(lon).toFixed(3)}° ${lon >= 0 ? 'E' : 'W'}`;
 }
 
-export function detailLines(scene, poster, t, lang, range) {
-  const lines = [];
-  if (poster.showCoords) lines.push(fmtCoord(scene.frame.center[0], scene.frame.center[1]));
+function fontFamily(poster, role) {
+  if (poster.font === 'geometric') return "Jost, Futura, 'Century Gothic', sans-serif";
+  return role === 'title' ? 'Fraunces, Georgia, serif' : 'Inter, Helvetica, Arial, sans-serif';
+}
+
+// Morceaux de la ligne de détails : distance, dénivelé (ou point culminant), coordonnées.
+export function detailParts(scene, poster, t, lang, range) {
+  const imp = poster.units === 'imperial';
+  const parts = [];
   if (poster.showStats) {
     const s = scene.stats;
     if (s?.distanceM) {
-      lines.push(`${t('stat.distance')} ${fmtNum(s.distanceM / 1000, lang, 1)} km · ${t('stat.gain')} ${fmtNum(s.gainM, lang)} m`);
+      parts.push(imp ? `${fmtNum(s.distanceM / 1609.344, lang, 1)} mi` : `${fmtNum(s.distanceM / 1000, lang, 1)} km`);
+      parts.push(imp ? `+${fmtNum(s.gainM * 3.28084, lang)} ft` : `+${fmtNum(s.gainM, lang)} m`);
     } else if (range) {
-      lines.push(`${t('stat.summit')} ${fmtNum(range[1], lang)} m`);
+      parts.push(`${t('stat.summit')} ${imp ? fmtNum(range[1] * 3.28084, lang) + ' ft' : fmtNum(range[1], lang) + ' m'}`);
     }
   }
-  return lines;
+  if (poster.showCoords) parts.push(fmtCoord(scene.frame.center[0], scene.frame.center[1]));
+  return parts;
 }
 
-function drawText(L, poster, colors, lines) {
+function drawText(L, poster, colors, parts) {
   const { W, m, textY, textH } = L;
   if (!textH) return '';
+  const geo = poster.font === 'geometric';
   const avail = W - 2 * m;
   const align = poster.textAlign === 'left' ? 'start' : 'middle';
   const x = align === 'start' ? m : W / 2;
-  const title = poster.title || '';
-  let fs = L.u * 0.085;
-  if (title.length) fs = Math.min(fs, avail / (title.length * 0.56));
+  // L'espacement des lettres ajoute un blanc après le dernier caractère : on recentre.
+  const xs = (ls) => f2(align === 'middle' ? x + ls / 2 : x);
+  const title = geo ? (poster.title || '').toUpperCase() : poster.title || '';
+  const track = geo ? 0.22 : 0;
+  let fs = L.u * (geo ? 0.07 : 0.085);
+  if (title.length) fs = Math.min(fs, avail / (title.length * ((geo ? 0.66 : 0.56) + track)));
   const sub = (poster.subtitle || '').toUpperCase();
   const fsSub = L.u * 0.024;
-  const fsDet = L.u * 0.019;
+  const fsDet = L.u * (geo ? 0.021 : 0.019);
+  const sep = geo ? '  ·  ' : ' · ';
+  const joined = parts.join(sep);
+  const det = geo ? (s) => s.toUpperCase() : (s) => s;
+  const lines = joined.length > 64 && parts.length > 1 ? [parts.slice(0, -1).join(sep), parts[parts.length - 1]] : joined ? [joined] : [];
   let y = textY + textH * 0.18 + fs * 0.8;
   let out = `<g fill="${colors.ink}" text-anchor="${align}">`;
-  if (title) out += `<text x="${f2(x)}" y="${f2(y)}" font-family="Fraunces, Georgia, serif" font-weight="600" font-size="${f2(fs)}">${esc(title)}</text>`;
+  if (title) {
+    const ls = fs * track;
+    out += `<text x="${xs(ls)}" y="${f2(y)}" font-family="${fontFamily(poster, 'title')}" font-weight="${geo ? 400 : 600}" font-size="${f2(fs)}" letter-spacing="${f2(ls)}">${esc(title)}</text>`;
+  }
   y += fsSub * 2.1;
   if (sub) {
     const ls = fsSub * 0.28;
     const subW = Math.min(avail, sub.length * (fsSub * 0.66 + ls));
-    out += `<text x="${f2(x)}" y="${f2(y)}" font-family="Inter, Helvetica, Arial, sans-serif" font-weight="500" font-size="${f2(fsSub)}" letter-spacing="${f2(ls)}" ${subW >= avail ? `textLength="${f2(avail)}" lengthAdjust="spacingAndGlyphs"` : ''}>${esc(sub)}</text>`;
+    out += `<text x="${xs(ls)}" y="${f2(y)}" font-family="${fontFamily(poster, 'body')}" font-weight="500" font-size="${f2(fsSub)}" letter-spacing="${f2(ls)}" ${subW >= avail ? `textLength="${f2(avail)}" lengthAdjust="spacingAndGlyphs"` : ''}>${esc(sub)}</text>`;
   }
   for (const line of lines) {
-    y += fsDet * 1.75;
-    out += `<text x="${f2(x)}" y="${f2(y)}" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${f2(fsDet)}" fill-opacity="0.72">${esc(line)}</text>`;
+    y += fsDet * (geo ? 1.9 : 1.75);
+    const ls = geo ? fsDet * 0.2 : 0;
+    out += `<text x="${xs(ls)}" y="${f2(y)}" font-family="${fontFamily(poster, 'body')}" font-size="${f2(fsDet)}" letter-spacing="${f2(ls)}" fill-opacity="${geo ? 0.9 : 0.72}" xml:space="preserve">${esc(det(line))}</text>`;
   }
   return out + '</g>';
+}
+
+// Fondu des bords : deux masques à dégradé (horizontal puis vertical).
+function fadeDefs(art, amount) {
+  const f = Math.min(0.49, amount * 0.35);
+  const stops = `<stop offset="0" stop-color="#000"/><stop offset="${f2(f * 0.5)}" stop-color="#555"/><stop offset="${f2(f)}" stop-color="#fff"/><stop offset="${f2(1 - f)}" stop-color="#fff"/><stop offset="${f2(1 - f * 0.5)}" stop-color="#555"/><stop offset="1" stop-color="#000"/>`;
+  const r = `x="${f2(art.x)}" y="${f2(art.y)}" width="${f2(art.w)}" height="${f2(art.h)}"`;
+  return (
+    `<linearGradient id="fade-gx" x1="0" x2="1" y1="0" y2="0">${stops}</linearGradient>` +
+    `<linearGradient id="fade-gy" x1="0" x2="0" y1="0" y2="1">${stops}</linearGradient>` +
+    `<mask id="fade-x" maskUnits="userSpaceOnUse" ${r}><rect ${r} fill="url(#fade-gx)"/></mask>` +
+    `<mask id="fade-y" maskUnits="userSpaceOnUse" ${r}><rect ${r} fill="url(#fade-gy)"/></mask>`
+  );
 }
 
 /* ---------- Composition ---------- */
@@ -320,17 +443,21 @@ export function renderPoster(scene, poster, { t, lang, fontCss = '', cache = {} 
   svg += `<rect width="${f2(W)}" height="${f2(H)}" fill="${colors.bg}"/>`;
   svg += `<defs><clipPath id="art-clip"><rect x="${f2(art.x)}" y="${f2(art.y)}" width="${f2(art.w)}" height="${f2(art.h)}"/></clipPath>`;
   if (clip) svg += `<clipPath id="region-clip"><path clip-rule="evenodd" d="${ringsPath(clip, mx, my)}"/></clipPath>`;
+  const fade = poster.edgeFade > 0.01;
+  if (fade) svg += fadeDefs(art, poster.edgeFade);
   svg += `</defs>`;
   const style = DRAW[poster.style] ? poster.style : 'ridges';
   const regionClip = clip && style !== 'ridges' ? ' clip-path="url(#region-clip)"' : '';
-  svg += `<g clip-path="url(#art-clip)"><g${regionClip}>${DRAW[style](ctx)}</g>`;
+  const body = `<g${regionClip}>${DRAW[style](ctx)}</g>`;
+  svg += `<g clip-path="url(#art-clip)">${fade ? `<g mask="url(#fade-y)"><g mask="url(#fade-x)">${body}</g></g>` : body}`;
   if (clip && poster.outline && style !== 'ridges') {
     svg += `<path d="${ringsPath(clip, mx, my)}" fill="none" stroke="${colors.ink}" stroke-width="${f2(L.u * 0.0012)}" stroke-linejoin="round"/>`;
   }
   if (scene.trackM && poster.showTrack) {
     const d = 'M' + scene.trackM.map(([x, y]) => `${f2(mx(x))},${f2(my(y))}`).join('L');
     const tw = L.u * (0.0018 + 0.0022 * poster.trackWidth);
-    svg += `<path d="${d}" fill="none" stroke="${colors.bg}" stroke-width="${f2(tw * 2.6)}" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.85"/>`;
+    if (poster.trackHalo !== false)
+      svg += `<path d="${d}" fill="none" stroke="${colors.bg}" stroke-width="${f2(tw * 2.6)}" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.85"/>`;
     svg += `<path d="${d}" fill="none" stroke="${colors.accent}" stroke-width="${f2(tw)}" stroke-linecap="round" stroke-linejoin="round"/>`;
     const [sx, sy] = scene.trackM[0];
     svg += `<circle cx="${f2(mx(sx))}" cy="${f2(my(sy))}" r="${f2(tw * 1.6)}" fill="${colors.accent}" stroke="${colors.bg}" stroke-width="${f2(tw * 0.6)}"/>`;
@@ -340,6 +467,6 @@ export function renderPoster(scene, poster, { t, lang, fontCss = '', cache = {} 
     const o = L.u * 0.012;
     svg += `<rect x="${f2(art.x - o)}" y="${f2(art.y - o)}" width="${f2(art.w + 2 * o)}" height="${f2(art.h + 2 * o)}" fill="none" stroke="${colors.ink}" stroke-width="${f2(L.u * 0.0012)}"/>`;
   }
-  svg += drawText(L, poster, colors, detailLines(scene, poster, t, lang, range));
+  svg += drawText(L, poster, colors, detailParts(scene, poster, t, lang, range));
   return svg + '</svg>';
 }

@@ -2,6 +2,8 @@ import '@fontsource/inter/400.css';
 import '@fontsource/inter/500.css';
 import '@fontsource/inter/600.css';
 import '@fontsource/fraunces/600.css';
+import '@fontsource/jost/400.css';
+import '@fontsource/jost/500.css';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import maplibregl from 'maplibre-gl';
@@ -40,6 +42,8 @@ const DEFAULT_POSTER = {
   title: '', subtitle: '', showCoords: true, showStats: true, textAlign: 'center',
   paper: 'A3', orientation: 'portrait',
   density: 0.5, relief: 0.5, trackWidth: 0.5, showTrack: true, border: false, clipRegion: true, outline: false,
+  font: 'serif', units: 'metric', edgeFade: 0, trackHalo: true,
+  contourStep: 0, smoothing: 0.5, lineWidth: 0.5, labels: true,
 };
 const DEFAULT_MODEL = {
   shape: 'rect', sizeMm: 150, baseMm: 4, reliefMm: 20, detail: 260, flattenSea: true,
@@ -409,7 +413,7 @@ function renderPreview() {
     $('#paper').innerHTML = svg;
     fitPaper();
     const [W, H] = paperSize(S.poster);
-    $('#infobar').textContent = `${S.poster.paper} · ${W} × ${H} mm`;
+    $('#infobar').textContent = `${paperLabel(S.poster.paper)} · ${fmt(W)} × ${fmt(H)} mm`;
   } else {
     if (!preview3d) {
       return import('./model/preview.js').then(({ ModelPreview }) => {
@@ -474,11 +478,19 @@ function ctlText(target, key, label) {
   const input = h('input', { type: 'text', className: 'field', value: target[key], oninput: () => { target[key] = input.value; schedule(); }, onchange: commit });
   return h('div', { className: 'ctl' }, h('div', { className: 'lbl' }, t(label)), input);
 }
-function ctlPills(target, key, label, options) {
+function ctlPills(target, key, label, options, after) {
   return h('div', { className: 'ctl' }, h('div', { className: 'lbl' }, t(label)),
     h('div', { className: 'pills' }, options.map(([v, l]) =>
-      h('button', { className: target[key] === v ? 'active' : '', onclick: () => { target[key] = v; commit(); renderControls(); schedule(); } }, l))));
+      h('button', { className: target[key] === v ? 'active' : '', onclick: () => { target[key] = v; after?.(); commit(); renderControls(); schedule(); } }, l))));
 }
+function ctlSelect(target, key, label, options) {
+  const sel = h('select', {
+    className: 'field',
+    onchange: () => { const v = options[sel.selectedIndex][0]; target[key] = v; commit(); renderControls(); schedule(); },
+  }, options.map(([v, l]) => h('option', { selected: target[key] === v }, l)));
+  return h('div', { className: 'ctl' }, h('div', { className: 'lbl' }, t(label)), sel);
+}
+const paperLabel = (k) => (k.endsWith('in') ? k.slice(0, -2).replace('x', '×') + ' in' : k.includes('x') ? k.replace('x', '×') + ' cm' : k);
 function ctlChoices(target, key, values, icons, prefix) {
   return h('div', { className: 'choices' }, values.map((v) =>
     h('button', {
@@ -495,13 +507,13 @@ function ctlPalette(target) {
       onclick: () => { target.palette = name; if (target.colors) target.colors = {}; commit(); renderControls(); schedule(); },
     }, h('span', { style: `background:${p.bg}` }), h('span', { style: `background:${p.ink}` }), h('span', { style: `background:${p.accent}` }))));
 }
-function ctlColors(target) {
+function ctlColors(target, withHi = false) {
   const c = resolveColors(target);
   const pick = (k, label) => {
     const input = h('input', { type: 'color', value: c[k], oninput: () => { target.colors = { ...target.colors, [k]: input.value }; schedule(); }, onchange: () => { commit(); renderControls(); } });
     return h('label', {}, input, t(label));
   };
-  return h('div', { className: 'ctl colors' }, pick('bg', 'color.bg'), pick('ink', 'color.ink'), pick('accent', 'color.accent'),
+  return h('div', { className: 'ctl colors' }, pick('bg', 'color.bg'), pick('ink', 'color.ink'), withHi && pick('hi', 'color.hi'), pick('accent', 'color.accent'),
     Object.keys(target.colors || {}).length ? h('button', { className: 'btn ghost', onclick: () => { target.colors = {}; commit(); renderControls(); schedule(); } }, t('action.reset')) : null);
 }
 const group = (title, ...items) => h('div', { className: 'group' }, h('h3', {}, t(title)), ...items);
@@ -515,24 +527,38 @@ function renderControls() {
   let groups;
   if (S.mode === 'poster') {
     const P = S.poster;
+    const isContours = P.style === 'contours';
+    const imp = P.units === 'imperial';
+    const unit = imp ? 'ft' : 'm';
+    const steps = imp ? [10, 20, 25, 50, 100, 200, 500, 1000] : [5, 10, 20, 25, 50, 100, 200, 500];
     groups = [
       group('sec.style', ctlChoices(P, 'style', STYLES, STYLE_ICONS, 'style.')),
-      group('sec.colors', ctlPalette(P), ctlColors(P)),
+      group('sec.colors', ctlPalette(P), ctlColors(P, isContours)),
       group('sec.text',
         ctlText(P, 'title', 'text.title'), ctlText(P, 'subtitle', 'text.subtitle'),
+        ctlPills(P, 'font', 'text.font', [['serif', t('font.serif')], ['geometric', t('font.geometric')]]),
         ctlToggle(P, 'showCoords', 'text.coords'), ctlToggle(P, 'showStats', 'text.stats'),
+        // Les équidistances proposées dépendent de l'unité : on repasse en automatique.
+        ctlPills(P, 'units', 'text.units', [['metric', t('units.metric')], ['imperial', t('units.imperial')]], () => { P.contourStep = 0; }),
         ctlPills(P, 'textAlign', 'text.align', [['center', t('align.center')], ['left', t('align.left')]])),
       group('sec.format',
-        ctlPills(P, 'paper', 'format.paper', Object.keys(PAPERS).map((k) => [k, k.includes('x') ? k.replace('x', '×') + ' cm' : k])),
+        ctlPills(P, 'paper', 'format.paper', Object.keys(PAPERS).map((k) => [k, paperLabel(k)])),
         ctlPills(P, 'orientation', 'format.orientation', [['portrait', t('frame.portrait')], ['landscape', t('frame.landscape')]])),
       group('sec.tuning',
-        ctlRange(P, 'density', 'tune.density', 0, 1, 0.01, pct),
-        ctlRange(P, 'relief', 'tune.relief', 0, 1, 0.01, pct),
-        hasTrack && ctlToggle(P, 'showTrack', 'tune.showTrack'),
-        hasTrack && P.showTrack && ctlRange(P, 'trackWidth', 'tune.trackWidth', 0, 1, 0.01, pct),
+        isContours && ctlSelect(P, 'contourStep', 'tune.step', [[0, t('tune.auto')], ...steps.map((v) => [v, `${fmt(v)} ${unit}`])]),
+        (!isContours || !P.contourStep) && ctlRange(P, 'density', 'tune.density', 0, 1, 0.01, pct),
+        isContours && ctlRange(P, 'smoothing', 'tune.smoothing', 0, 1, 0.01, pct),
+        isContours && ctlRange(P, 'lineWidth', 'tune.lineWidth', 0, 1, 0.01, pct),
+        isContours && ctlToggle(P, 'labels', 'tune.labels'),
+        !isContours && ctlRange(P, 'relief', 'tune.relief', 0, 1, 0.01, pct),
+        ctlRange(P, 'edgeFade', 'tune.edgeFade', 0, 1, 0.01, pct),
         hasRegion && ctlToggle(P, 'clipRegion', 'tune.clipRegion'),
         hasRegion && P.clipRegion && ctlToggle(P, 'outline', 'tune.outline'),
         ctlToggle(P, 'border', 'tune.border')),
+      hasTrack && group('sec.track',
+        ctlToggle(P, 'showTrack', 'tune.showTrack'),
+        P.showTrack && ctlRange(P, 'trackWidth', 'tune.trackWidth', 0, 1, 0.01, pct),
+        P.showTrack && ctlToggle(P, 'trackHalo', 'tune.trackHalo')),
     ];
   } else {
     const M = S.model;
@@ -685,7 +711,7 @@ async function enterExport() {
 
   if (S.mode === 'poster') {
     const [W, H] = paperSize(S.poster);
-    sum.append(...row('export.summary.format', `${t('export.poster')} · ${t('style.' + S.poster.style)} · ${S.poster.paper} (${W} × ${H} mm)`));
+    sum.append(...row('export.summary.format', `${t('export.poster')} · ${t('style.' + S.poster.style)} · ${paperLabel(S.poster.paper)} (${fmt(W)} × ${fmt(H)} mm)`));
     box.innerHTML = renderPoster(scene, S.poster, { t, lang: getLang(), cache: renderCache });
     const dpi = h('select', {}, [150, 200, 300].map((d) => h('option', { value: d, selected: d === 200 }, `${d} dpi`)));
     dls.append(

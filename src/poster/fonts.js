@@ -2,11 +2,15 @@
 import fraunces600 from '@fontsource/fraunces/files/fraunces-latin-600-normal.woff2?url';
 import inter400 from '@fontsource/inter/files/inter-latin-400-normal.woff2?url';
 import inter500 from '@fontsource/inter/files/inter-latin-500-normal.woff2?url';
+import jost400 from '@fontsource/jost/files/jost-latin-400-normal.woff2?url';
+import jost500 from '@fontsource/jost/files/jost-latin-500-normal.woff2?url';
 
 const FACES = [
   ['Fraunces', 600, fraunces600],
   ['Inter', 400, inter400],
   ['Inter', 500, inter500],
+  ['Jost', 400, jost400],
+  ['Jost', 500, jost500],
 ];
 
 function toBase64(buf) {
