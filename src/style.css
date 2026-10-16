@@ -86,7 +86,8 @@ h2 { font: 600 18px/1.2 var(--serif); margin: 0 0 12px; }
 .selected .stats { color: var(--muted); margin-top: 2px; }
 
 /* Carte et cadre */
-.mapwrap { position: relative; min-height: 0; }
+/* overflow: hidden — le voile du cadre (ombre de 9999 px) ne doit pas couvrir le panneau de gauche. */
+.mapwrap { position: relative; min-height: 0; overflow: hidden; }
 #map { position: absolute; inset: 0; background: #e8e4da; }
 .frame {
   position: absolute; pointer-events: none; border: 2px solid var(--ink); border-radius: 2px;
@@ -201,6 +202,10 @@ dialog::backdrop { background: rgba(35, 33, 30, 0.35); }
 .credits { padding: 6px 16px; border-top: 1px solid var(--line); background: var(--surface); height: 28px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 .maplibregl-ctrl-attrib { font-size: 10px; }
+
+@media (max-width: 1180px) {
+  .mapbar .small { display: none; }
+}
 
 @media (max-width: 860px) {
   .topbar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
