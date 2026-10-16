@@ -15,7 +15,7 @@ import { makeProjection, lonLatBounds, frameCorners } from './geo/project.js';
 import { loadElevation } from './geo/terrain.js';
 import { rasterMask } from './model/mesh.js';
 import { renderPoster, paperSize, PAPERS, STYLES } from './poster/render.js';
-import { PALETTES, resolveColors } from './poster/palettes.js';
+import { PALETTES, resolveColors, hexToRgb, rgbToHex, mix } from './poster/palettes.js';
 import { exportFontCss } from './poster/fonts.js';
 import { buildModel, SHAPES } from './model/build.js';
 
@@ -499,13 +499,34 @@ function ctlChoices(target, key, values, icons, prefix) {
       html: `<svg viewBox="0 0 64 44" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">${icons[v]}</svg><span>${t(prefix + v)}</span>`,
     })));
 }
+// Pastille = mini-aperçu : fond, deux courbes, une maîtresse et un bout de trace.
+const swatchSvg = (p) =>
+  `<svg viewBox="0 0 48 30" aria-hidden="true"><rect width="48" height="30" fill="${p.bg}"/>` +
+  `<path d="M-2 22 Q10 14 20 19 T50 15" fill="none" stroke="${p.ink}" stroke-width="1.2" opacity=".8"/>` +
+  `<path d="M-2 27 Q12 20 24 24 T50 21" fill="none" stroke="${p.ink}" stroke-width="1.2" opacity=".8"/>` +
+  `<path d="M-2 16 Q9 7 21 12 T50 8" fill="none" stroke="${p.hi}" stroke-width="2"/>` +
+  `<path d="M6 6 L18 10 L28 5 L40 9" fill="none" stroke="${p.accent}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
 function ctlPalette(target) {
+  const custom = target.colors && Object.keys(target.colors).length;
   return h('div', { className: 'swatches' }, Object.entries(PALETTES).map(([name, p]) =>
     h('button', {
-      title: name,
-      className: target.palette === name && !(target.colors && Object.keys(target.colors).length) ? 'active' : '',
+      title: t('palette.' + name),
+      className: target.palette === name && !custom ? 'active' : '',
       onclick: () => { target.palette = name; if (target.colors) target.colors = {}; commit(); renderControls(); schedule(); },
-    }, h('span', { style: `background:${p.bg}` }), h('span', { style: `background:${p.ink}` }), h('span', { style: `background:${p.accent}` }))));
+      html: `${swatchSvg(p)}<span>${t('palette.' + name)}</span>`,
+    })));
+}
+
+// Variante inverse : le fond prend la couleur des maîtresses et inversement.
+// Si l'encre se confondait avec les maîtresses, elle passe à mi-chemin pour rester visible.
+function invertColors(target) {
+  const c = resolveColors(target);
+  const ink = c.ink.toLowerCase() === c.hi.toLowerCase() ? rgbToHex(mix(hexToRgb(c.hi), hexToRgb(c.bg), 0.62)) : c.ink;
+  target.colors = { bg: c.hi, ink, hi: c.bg, accent: c.accent };
+  commit();
+  renderControls();
+  schedule();
 }
 function ctlColors(target, withHi = false) {
   const c = resolveColors(target);
@@ -513,8 +534,11 @@ function ctlColors(target, withHi = false) {
     const input = h('input', { type: 'color', value: c[k], oninput: () => { target.colors = { ...target.colors, [k]: input.value }; schedule(); }, onchange: () => { commit(); renderControls(); } });
     return h('label', {}, input, t(label));
   };
-  return h('div', { className: 'ctl colors' }, pick('bg', 'color.bg'), pick('ink', 'color.ink'), withHi && pick('hi', 'color.hi'), pick('accent', 'color.accent'),
-    Object.keys(target.colors || {}).length ? h('button', { className: 'btn ghost', onclick: () => { target.colors = {}; commit(); renderControls(); schedule(); } }, t('action.reset')) : null);
+  return h('div', { className: 'ctl' },
+    h('div', { className: 'colors' }, pick('bg', 'color.bg'), pick('ink', 'color.ink'), withHi && pick('hi', 'color.hi'), pick('accent', 'color.accent')),
+    h('div', { className: 'row color-actions' },
+      h('button', { className: 'btn ghost', onclick: () => invertColors(target) }, '◐ ' + t('action.invert')),
+      Object.keys(target.colors || {}).length ? h('button', { className: 'btn ghost', onclick: () => { target.colors = {}; commit(); renderControls(); schedule(); } }, t('action.reset')) : null));
 }
 const group = (title, ...items) => h('div', { className: 'group' }, h('h3', {}, t(title)), ...items);
 
