@@ -1,7 +1,7 @@
 // Aperçu 3D (three.js), rendu à la demande : pas de boucle d'animation permanente.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { makeRamp, hexToRgb } from '../poster/palettes.js';
+import { hexToRgb } from '../poster/palettes.js';
 
 export class ModelPreview {
   constructor(container) {
@@ -13,7 +13,7 @@ export class ModelPreview {
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(35, 1, 1, 20000);
     this.camera.up.set(0, 0, 1);
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8478, 1.6));
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0xb8b2a6, 1.9));
     const sun = new THREE.DirectionalLight(0xffffff, 2.2);
     sun.position.set(-1, 1.2, 1.4);
     this.scene.add(sun);
@@ -39,31 +39,38 @@ export class ModelPreview {
     this.render();
   }
 
-  // model : sortie de buildModel ; colors : { ramp, accent, side }
+  // model : sortie de buildModel ; colors : { colorOf(code) → hex, base: hex (flancs et dessous) }
   setModel(model, colors, keepView = false) {
     for (const c of [...this.group.children]) {
       this.group.remove(c);
       c.traverse((o) => o.geometry?.dispose());
     }
-    const ramp = makeRamp(colors.ramp);
-    const side = hexToRgb(colors.side).map((v) => v / 255);
+    const side = hexToRgb(colors.base).map((v) => v / 255);
+    const rgbOf = new Map();
+    const codeRgb = (code) => {
+      if (!rgbOf.has(code)) rgbOf.set(code, hexToRgb(colors.colorOf(code)).map((v) => v / 255));
+      return rgbOf.get(code);
+    };
     const { info } = model;
-    const zTop = info.heightMm, zBase = Math.max(0.01, zTop - info.reliefMm - (info.trackMm || 0));
     const exploded = model.parts.length > 1 ? 4 : 0;
     for (const p of model.parts) {
       const nTop = p.topCount * 3;
-      // Dessus : sommets partagés → ombrage lissé.
-      const top = new THREE.BufferGeometry();
-      top.setAttribute('position', new THREE.BufferAttribute(p.positions, 3));
-      top.setIndex(new THREE.BufferAttribute(p.indices.subarray(0, nTop), 1));
-      const col = new Float32Array(p.positions.length);
-      for (let v = 0; v < p.positions.length / 3; v++) {
-        const zz = p.positions[3 * v + 2];
-        const c = ramp(((zz - zBase) / Math.max(0.1, zTop - zBase)) * 0.92 + 0.04).map((x) => x / 255);
-        col.set(c, 3 * v);
+      // Dessus : normales lissées sur les sommets partagés, puis une couleur par triangle
+      // (comme la peinture du trancheur).
+      const indexed = new THREE.BufferGeometry();
+      indexed.setAttribute('position', new THREE.BufferAttribute(p.positions, 3));
+      indexed.setIndex(new THREE.BufferAttribute(p.indices.subarray(0, nTop), 1));
+      indexed.computeVertexNormals();
+      const top = indexed.toNonIndexed();
+      indexed.dispose();
+      const col = new Float32Array(nTop * 3);
+      for (let t = 0; t < p.topCount; t++) {
+        const c = codeRgb(p.triCodes[t]);
+        col.set(c, 9 * t);
+        col.set(c, 9 * t + 3);
+        col.set(c, 9 * t + 6);
       }
       top.setAttribute('color', new THREE.BufferAttribute(col, 3));
-      top.computeVertexNormals();
       // Flancs et dessous : facettes nettes.
       const rest = new THREE.BufferGeometry();
       rest.setAttribute('position', new THREE.BufferAttribute(p.positions, 3));

@@ -1,6 +1,29 @@
 // Prépare le modèle 3D : forme, échelle, relief, trace en relief, tuiles.
 import { buildMesh, rasterMask, gridX, gridY } from './mesh.js';
 import { resampleGrid } from '../geo/terrain.js';
+import { C } from '../geo/landcover.js';
+import { CODE_TRACK, CODE_BAND } from './colors.js';
+
+// Largeur imprimée des cours d'eau OpenStreetMap (mm).
+const RIVER_MM = { river: 1.4, canal: 1.0, stream: 0.7 };
+
+// Marque les points de grille à moins de width/2 (mm) d'une polyligne (coordonnées en mm).
+function stampLine(pts, half, cols, rows, cell, mark) {
+  for (let p = 1; p < pts.length; p++) {
+    const [ax, ay] = pts[p - 1], [bx, by] = pts[p];
+    const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - half) / cell + (cols - 1) / 2));
+    const i1 = Math.min(cols - 1, Math.ceil((Math.max(ax, bx) + half) / cell + (cols - 1) / 2));
+    const j0 = Math.max(0, Math.floor((rows - 1) / 2 - (Math.max(ay, by) + half) / cell));
+    const j1 = Math.min(rows - 1, Math.ceil((rows - 1) / 2 - (Math.min(ay, by) - half) / cell));
+    const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy || 1e-9;
+    for (let j = j0; j <= j1; j++)
+      for (let i = i0; i <= i1; i++) {
+        const px = gridX(i, cols, cell), py = gridY(j, rows, cell);
+        const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+        if (Math.hypot(px - ax - t * dx, py - ay - t * dy) <= half) mark(j * cols + i);
+      }
+  }
+}
 
 export const SHAPES = ['rect', 'circle', 'hexagon', 'region'];
 
@@ -61,27 +84,48 @@ export function buildModel(scene, model) {
     z[k] = model.baseMm + Math.max(0, h - lo) * kz;
   }
 
-  // Trace GPX en relief sur le dessus.
-  if (scene.trackM && model.track) {
-    const half = model.trackWidthMm / 2;
-    const hit = new Uint8Array(cols * rows);
-    const pts = scene.trackM.map(([x, y]) => [x * s, y * s]);
-    for (let p = 1; p < pts.length; p++) {
-      const [ax, ay] = pts[p - 1], [bx, by] = pts[p];
-      const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - half) / cell + (cols - 1) / 2));
-      const i1 = Math.min(cols - 1, Math.ceil((Math.max(ax, bx) + half) / cell + (cols - 1) / 2));
-      const j0 = Math.max(0, Math.floor((rows - 1) / 2 - (Math.max(ay, by) + half) / cell));
-      const j1 = Math.min(rows - 1, Math.ceil((rows - 1) / 2 - (Math.min(ay, by) - half) / cell));
-      const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy || 1e-9;
-      for (let j = j0; j <= j1; j++)
-        for (let i = i0; i <= i1; i++) {
-          const px = gridX(i, cols, cell), py = gridY(j, rows, cell);
-          const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
-          if (Math.hypot(px - ax - t * dx, py - ay - t * dy) <= half) hit[j * cols + i] = 1;
-        }
-    }
-    for (let k = 0; k < z.length; k++) if (hit[k]) z[k] += model.trackHeightMm;
+  // Occupation du sol rééchantillonnée sur la grille du modèle (point le plus proche).
+  let cls = null;
+  if (model.colorMode === 'landcover' && scene.landcover) {
+    const sg = scene.grid, lc = scene.landcover;
+    cls = new Uint8Array(cols * rows);
+    for (let j = 0; j < rows; j++)
+      for (let i = 0; i < cols; i++) {
+        const si = Math.round(gridX(i, cols, grid.cell) / sg.cell + (sg.cols - 1) / 2);
+        const sj = Math.round((sg.rows - 1) / 2 - gridY(j, rows, grid.cell) / sg.cell);
+        cls[j * cols + i] = lc[Math.min(sg.rows - 1, Math.max(0, sj)) * sg.cols + Math.min(sg.cols - 1, Math.max(0, si))];
+      }
+    if (model.snowAbove > 0)
+      for (let k = 0; k < cls.length; k++) if (grid.data[k] >= model.snowAbove && cls[k] !== C.water) cls[k] = C.snow;
+    if (model.osmRivers && scene.rivers?.length)
+      for (const r of scene.rivers)
+        stampLine(r.pts.map(([x, y]) => [x * s, y * s]), (RIVER_MM[r.kind] || 0.8) / 2, cols, rows, cell, (k) => { cls[k] = C.water; });
+    // Eau légèrement en creux : les rives se lisent mieux, au toucher comme à l'œil.
+    if (model.waterDepthMm > 0)
+      for (let k = 0; k < cls.length; k++) if (cls[k] === C.water) z[k] = Math.max(0.6, z[k] - model.waterDepthMm);
   }
+
+  // Trace GPX : en relief et/ou en couleur sur le dessus.
+  let trackHit = null;
+  if (scene.trackM && (model.track || model.trackColored)) {
+    trackHit = new Uint8Array(cols * rows);
+    stampLine(scene.trackM.map(([x, y]) => [x * s, y * s]), model.trackWidthMm / 2, cols, rows, cell, (k) => { trackHit[k] = 1; });
+    if (model.track) for (let k = 0; k < z.length; k++) if (trackHit[k]) z[k] += model.trackHeightMm;
+  }
+
+  // Code de zone d'un triangle du dessus, d'après le point de grille le plus proche de son centre.
+  const bands = Math.max(2, model.bands);
+  const codeAt = (x, y) => {
+    const i = Math.min(cols - 1, Math.max(0, Math.round(x / cell + (cols - 1) / 2)));
+    const j = Math.min(rows - 1, Math.max(0, Math.round((rows - 1) / 2 - y / cell)));
+    const k = j * cols + i;
+    if (trackHit && model.trackColored && trackHit[k]) return CODE_TRACK;
+    if (model.colorMode === 'elevation') {
+      const h = flatten ? Math.max(0, grid.data[k]) : grid.data[k];
+      return CODE_BAND + Math.min(bands - 1, Math.max(0, Math.floor(((h - lo) / span) * bands)));
+    }
+    return cls ? cls[k] : 0;
+  };
 
   const ringsMm = ringsM ? ringsM.map((r) => r.map(([x, y]) => [x * s, y * s])) : null;
   const widthMm = (bx1 - bx0) * s, depthMm = (by1 - by0) * s;
@@ -99,13 +143,23 @@ export function buildModel(scene, model) {
   ys.push(1e9);
 
   const parts = [];
+  const codes = new Set();
   for (let b = 0; b < ny; b++)
     for (let a = 0; a < nx; a++) {
       const mesh = buildMesh({ cols, rows, cell, z, polygons: ringsMm, clip: [xs[a], ys[b], xs[a + 1], ys[b + 1]] });
-      if (mesh.indices.length) parts.push({ ...mesh, tile: [a, ny - 1 - b], name: nx * ny > 1 ? `${String.fromCharCode(65 + (ny - 1 - b))}${a + 1}` : '' });
+      if (!mesh.indices.length) continue;
+      const P = mesh.positions, I = mesh.indices;
+      const triCodes = new Uint8Array(mesh.topCount);
+      for (let t = 0; t < mesh.topCount; t++) {
+        const v0 = I[3 * t] * 3, v1 = I[3 * t + 1] * 3, v2 = I[3 * t + 2] * 3;
+        triCodes[t] = codeAt((P[v0] + P[v1] + P[v2]) / 3, (P[v0 + 1] + P[v1 + 1] + P[v2 + 1]) / 3);
+        codes.add(triCodes[t]);
+      }
+      parts.push({ ...mesh, triCodes, tile: [a, ny - 1 - b], name: nx * ny > 1 ? `${String.fromCharCode(65 + (ny - 1 - b))}${a + 1}` : '' });
     }
   return {
     parts,
+    codes,
     center: [((bx0 + bx1) / 2) * s, ((by0 + by1) / 2) * s],
     info: {
       widthMm, depthMm,

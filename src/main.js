@@ -18,6 +18,8 @@ import { renderPoster, paperSize, PAPERS, STYLES } from './poster/render.js';
 import { PALETTES, resolveColors, hexToRgb, rgbToHex, mix } from './poster/palettes.js';
 import { exportFontCss } from './poster/fonts.js';
 import { buildModel, SHAPES } from './model/build.js';
+import { loadWorldCover, reliefClasses, loadRivers } from './geo/landcover.js';
+import { colorOfCode, resolveFilaments, DEFAULT_PRINT_COLORS, DEFAULT_CLASS_ON, LAND } from './model/colors.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -48,6 +50,8 @@ const DEFAULT_POSTER = {
 const DEFAULT_MODEL = {
   shape: 'rect', sizeMm: 150, baseMm: 4, reliefMm: 20, detail: 260, flattenSea: true,
   track: true, trackHeightMm: 1, trackWidthMm: 1.6, tiles: false, bedMm: 220, palette: 'papier',
+  colorMode: 'landcover', printColors: {}, classOn: {}, bands: 5, snowAbove: 0, waterDepthMm: 0.6,
+  osmRivers: true, trackColored: true,
 };
 
 const S = {
@@ -369,6 +373,54 @@ async function ensureScene() {
   return scene;
 }
 
+// Occupation du sol et rivières : chargées à la demande pour l'objet 3D, sans bloquer l'aperçu.
+let lcCtl;
+function ensureLandcover() {
+  if (!scene || scene.landcoverState) return;
+  const sc = scene;
+  sc.landcoverState = 'loading';
+  lcCtl?.abort();
+  lcCtl = new AbortController();
+  loadWorldCover(sc.frame, sc.grid, { signal: lcCtl.signal })
+    .then((cls) => {
+      sc.landcover = reliefClasses(sc.grid, cls); // les trous éventuels sont estimés depuis le relief
+      sc.landcoverState = 'worldcover';
+    })
+    .catch((e) => {
+      if (e.name === 'AbortError') { sc.landcoverState = null; return; }
+      console.warn('Occupation du sol indisponible :', e.message);
+      sc.landcover = reliefClasses(sc.grid);
+      sc.landcoverState = 'relief';
+    })
+    .finally(() => { if (sc === scene) { lastModel = null; schedule(); } });
+}
+function ensureRivers() {
+  if (!scene || scene.riversState) return;
+  const sc = scene;
+  sc.riversState = 'loading';
+  loadRivers(sc.frame)
+    .then((r) => { sc.rivers = r; sc.riversState = 'ok'; })
+    .catch((e) => { console.warn('Rivières OSM indisponibles :', e.message); sc.rivers = []; sc.riversState = 'error'; })
+    .finally(() => { if (sc === scene) { lastModel = null; schedule(); } });
+}
+
+const previewColors = () => ({
+  base: { ...DEFAULT_PRINT_COLORS, ...S.model.printColors }.base,
+  colorOf: (code) => colorOfCode(S.model, code),
+});
+
+function updateFilamentList() {
+  const el = document.getElementById('filament-list');
+  if (!el || !lastModel) return;
+  const { filaments } = resolveFilaments(S.model, lastModel.codes);
+  el.replaceChildren(
+    h('div', { className: 'lbl' }, t('pc.filaments', { n: filaments.length })),
+    h('div', { className: 'chips' }, filaments.map((hex, i) => h('span', { className: 'chip', title: hex }, h('i', { style: `background:${hex}` }), String(i + 1)))),
+    filaments.length > 4 ? h('p', { className: 'hint' }, t('pc.tooMany')) : null,
+    S.model.colorMode === 'landcover' ? h('p', { className: 'hint' }, t('pc.source.' + (scene?.landcoverState || 'loading'))) : null,
+  );
+}
+
 function showLoading(p) {
   $('#loading').hidden = false;
   $('#loading .spinner').hidden = false;
@@ -423,15 +475,20 @@ function renderPreview() {
       });
     }
     const keep = lastModel?.shapeKey === S.model.shape + S.model.sizeMm;
+    if (S.model.colorMode === 'landcover') {
+      ensureLandcover();
+      if (S.model.osmRivers) ensureRivers();
+    }
     lastModel = buildModel(scene, S.model);
     lastModel.shapeKey = S.model.shape + S.model.sizeMm;
-    const p = PALETTES[S.model.palette] || PALETTES.papier;
-    preview3d.setModel(lastModel, { ramp: p.ramp, side: p.ramp[2] }, keep);
+    preview3d.setModel(lastModel, previewColors(), keep);
+    updateFilamentList();
     const i = lastModel.info;
     const tris = lastModel.parts.reduce((n, q) => n + q.indices.length / 3, 0);
     const parts = [t('model.info', { w: fmt(i.widthMm), d: fmt(i.depthMm), h: fmt(i.heightMm, 1), x: fmt(i.exaggeration, 1) })];
     if (i.tiles[0] * i.tiles[1] > 1) parts.push(t('model.tilesInfo', { n: lastModel.parts.length, nx: i.tiles[0], ny: i.tiles[1] }));
     parts.push(t('model.tris', { n: fmt(tris) }));
+    parts.push(t('model.filaments', { n: resolveFilaments(S.model, lastModel.codes).filaments.length }));
     $('#infobar').textContent = parts.join(' · ');
   }
 }
@@ -540,6 +597,28 @@ function ctlColors(target, withHi = false) {
       h('button', { className: 'btn ghost', onclick: () => invertColors(target) }, '◐ ' + t('action.invert')),
       Object.keys(target.colors || {}).length ? h('button', { className: 'btn ghost', onclick: () => { target.colors = {}; commit(); renderControls(); schedule(); } }, t('action.reset')) : null));
 }
+// Une ligne par zone : case à cocher (sinon la zone prend la couleur du reste du terrain),
+// couleur modifiable, nom.
+function ctlClassColors(M) {
+  const col = { ...DEFAULT_PRINT_COLORS, ...M.printColors };
+  return h('div', { className: 'ctl classes' }, LAND.map((name) => {
+    const on = M.classOn?.[name] ?? DEFAULT_CLASS_ON[name];
+    const cb = h('input', { type: 'checkbox', checked: on, onchange: () => { M.classOn = { ...M.classOn, [name]: cb.checked }; commit(); renderControls(); schedule(); } });
+    const color = h('input', {
+      type: 'color', value: col[name], disabled: !on,
+      oninput: () => { M.printColors = { ...M.printColors, [name]: color.value }; schedule(); },
+      onchange: commit,
+    });
+    return h('label', { className: 'class-row' + (on ? '' : ' off') }, cb, color, h('span', {}, t('lc.' + name)));
+  }));
+}
+function ctlPrintColors(M, list) {
+  const col = { ...DEFAULT_PRINT_COLORS, ...M.printColors };
+  return h('div', { className: 'ctl colors' }, list.filter(Boolean).map(([k, label]) => {
+    const input = h('input', { type: 'color', value: col[k], oninput: () => { M.printColors = { ...M.printColors, [k]: input.value }; schedule(); }, onchange: commit });
+    return h('label', {}, input, t(label));
+  }));
+}
 const group = (title, ...items) => h('div', { className: 'group' }, h('h3', {}, t(title)), ...items);
 
 function renderControls() {
@@ -602,7 +681,21 @@ function renderControls() {
       group('sec.print',
         ctlToggle(M, 'tiles', 'model.tiles'),
         M.tiles && ctlRange(M, 'bedMm', 'model.bed', 120, 400, 5, mm)),
-      group('sec.colors', ctlPalette(M)),
+      group('sec.printColors',
+        ctlPills(M, 'colorMode', 'pc.mode', [['landcover', t('pc.landcover')], ['elevation', t('pc.elevation')], ['single', t('pc.single')]]),
+        M.colorMode === 'landcover' && ctlClassColors(M),
+        M.colorMode === 'elevation' && ctlRange(M, 'bands', 'pc.bands', 2, 8, 1, (v) => `${v}`),
+        ctlPrintColors(M, [
+          M.colorMode === 'elevation' ? ['low', 'pc.low'] : ['terrain', M.colorMode === 'landcover' ? 'pc.terrainRest' : 'pc.terrain'],
+          M.colorMode === 'elevation' && ['high', 'pc.high'],
+          ['base', 'pc.base'],
+          hasTrack && M.trackColored && ['track', 'pc.track'],
+        ]),
+        hasTrack && ctlToggle(M, 'trackColored', 'pc.trackColored'),
+        M.colorMode === 'landcover' && ctlRange(M, 'snowAbove', 'pc.snowAbove', 0, 5000, 100, (v) => (v ? `${fmt(v)} m` : t('pc.off'))),
+        M.colorMode === 'landcover' && ctlRange(M, 'waterDepthMm', 'pc.waterDepth', 0, 2, 0.1, (v) => (v ? mm(v) : t('pc.off'))),
+        M.colorMode === 'landcover' && ctlToggle(M, 'osmRivers', 'pc.osmRivers'),
+        h('div', { id: 'filament-list', className: 'ctl filaments' })),
     ];
   }
   box.replaceChildren(...groups.filter(Boolean));
@@ -672,7 +765,9 @@ const EXPORTS = {
   },
   '3mf': async () => {
     const { threeMF } = await import('./model/export.js');
-    const f = threeMF(currentModel(), slug());
+    const m = currentModel();
+    const paint = resolveFilaments(S.model, m.codes);
+    const f = threeMF(m, slug(), paint.filaments.length > 1 ? paint : null);
     download(f.name, f.data, f.type);
   },
   glb: async () => {
@@ -687,10 +782,7 @@ const EXPORTS = {
 function currentModel() {
   if (!lastModel) {
     lastModel = buildModel(scene, S.model);
-    if (preview3d) {
-      const p = PALETTES[S.model.palette] || PALETTES.papier;
-      preview3d.setModel(lastModel, { ramp: p.ramp, side: p.ramp[2] });
-    }
+    if (preview3d) preview3d.setModel(lastModel, previewColors());
   }
   return lastModel;
 }
@@ -750,6 +842,9 @@ async function enterExport() {
       ...row('export.summary.format', `${t('export.model')} · ${t('shape.' + S.model.shape)}`),
       ...row('export.summary.dims', t('model.info', { w: fmt(i.widthMm), d: fmt(i.depthMm), h: fmt(i.heightMm, 1), x: fmt(i.exaggeration, 1) }) +
         (m.parts.length > 1 ? ' · ' + t('model.tilesInfo', { n: m.parts.length, nx: i.tiles[0], ny: i.tiles[1] }) : '')),
+      h('dt', {}, t('export.summary.filaments')),
+      h('dd', { className: 'chips' }, resolveFilaments(S.model, m.codes).filaments.map((hex, k) =>
+        h('span', { className: 'chip', title: hex }, h('i', { style: `background:${hex}` }), String(k + 1)))),
     );
     if (preview3d) box.append(h('img', { src: preview3d.snapshot(), alt: '' }));
     dls.append(

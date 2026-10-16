@@ -1,6 +1,7 @@
 // Exports 3D : STL binaire (un fichier par tuile, zippés s'il y en a plusieurs),
 // 3MF (un objet par tuile), GLB (aperçu couleur, unités en mètres, Y vers le haut).
 import { zipSync, strToU8 } from 'fflate';
+import { paintCode } from './colors.js';
 
 export function stlBinary({ positions, indices }, name = 'relief') {
   const n = indices.length / 3;
@@ -35,27 +36,47 @@ export function stlFiles(model, base) {
   return { name: `${base}-tuiles.zip`, data: zipSync(files, { level: 6 }), type: 'application/zip' };
 }
 
-export function threeMF(model, base) {
+// paint (facultatif) : { filaments: [hex…], filamentOf(code) } → chaque triangle du dessus
+// porte sa couleur (matériau 3MF standard) et sa peinture pour PrusaSlicer
+// (slic3rpe:mmu_segmentation) et Bambu Studio / OrcaSlicer (paint_color).
+// Le filament 1 (socle) reste celui des flancs et du dessous.
+export function threeMF(model, base, paint = null) {
   const objects = [];
   const items = [];
+  const matId = model.parts.length + 1;
+  const resources = paint
+    ? `<basematerials id="${matId}">${paint.filaments.map((hex, f) => `<base name="Filament ${f + 1}" displaycolor="${hex.toUpperCase()}FF"/>`).join('')}</basematerials>`
+    : '';
   model.parts.forEach((p, k) => {
     const P = p.positions, I = p.indices;
     const vs = new Array(P.length / 3);
     for (let v = 0; v < vs.length; v++) vs[v] = `<vertex x="${P[3 * v].toFixed(3)}" y="${P[3 * v + 1].toFixed(3)}" z="${P[3 * v + 2].toFixed(3)}"/>`;
     const ts = new Array(I.length / 3);
-    for (let t = 0; t < ts.length; t++) ts[t] = `<triangle v1="${I[3 * t]}" v2="${I[3 * t + 1]}" v3="${I[3 * t + 2]}"/>`;
+    for (let t = 0; t < ts.length; t++) {
+      let extra = '';
+      if (paint && t < p.topCount) {
+        const f = paint.filamentOf(p.triCodes[t]);
+        if (f > 1) {
+          const code = paintCode(f);
+          extra = ` p1="${f - 1}" slic3rpe:mmu_segmentation="${code}" paint_color="${code}"`;
+        }
+      }
+      ts[t] = `<triangle v1="${I[3 * t]}" v2="${I[3 * t + 1]}" v3="${I[3 * t + 2]}"${extra}/>`;
+    }
     const id = k + 1;
     const label = p.name ? `${base} ${p.name}` : base;
-    objects.push(`<object id="${id}" name="${label}" type="model"><mesh><vertices>${vs.join('')}</vertices><triangles>${ts.join('')}</triangles></mesh></object>`);
+    const mat = paint ? ` pid="${matId}" pindex="0"` : '';
+    objects.push(`<object id="${id}" name="${label}" type="model"${mat}><mesh><vertices>${vs.join('')}</vertices><triangles>${ts.join('')}</triangles></mesh></object>`);
     // Tuiles légèrement écartées pour être séparées dans le trancheur.
     const gap = 6;
     items.push(`<item objectid="${id}" transform="1 0 0 0 1 0 0 0 1 ${p.tile[0] * gap} ${-p.tile[1] * gap} 0"/>`);
   });
   const modelXml =
     `<?xml version="1.0" encoding="UTF-8"?>` +
-    `<model unit="millimeter" xml:lang="fr-FR" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
+    `<model unit="millimeter" xml:lang="fr-FR" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">` +
     `<metadata name="Application">Relief Studio</metadata>` +
-    `<resources>${objects.join('')}</resources><build>${items.join('')}</build></model>`;
+    (paint ? `<metadata name="slic3rpe:MmPaintingVersion">1</metadata>` : '') +
+    `<resources>${resources}${objects.join('')}</resources><build>${items.join('')}</build></model>`;
   const files = {
     '[Content_Types].xml': strToU8(
       `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
